@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { getAuthUrl } from '../../lib/google-auth'
+const { getAuthUrl } = typeof window === 'undefined' ? require('../../lib/google-auth') : { getAuthUrl: () => '' }
 
 export default function AdminSetup() {
   const [password, setPassword] = useState('')
@@ -16,19 +16,19 @@ export default function AdminSetup() {
     defaultLocation: ''
   })
 
-  const checkAuth = () => {
-    if (password === process.env.NEXT_PUBLIC_ADMIN_PASSWORD) {
+  const checkAuth = async () => {
+    const res = await fetch('/api/admin/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password })
+    })
+    const data = await res.json()
+    if (data.success) {
       setAuthenticated(true)
       loadClients()
     } else {
       alert('Wrong password')
     }
-  }
-
-  const loadClients = async () => {
-    const res = await fetch('/api/admin/clients')
-    const data = await res.json()
-    setClients(data.clients || [])
   }
 
   const createClient = async () => {
@@ -42,10 +42,11 @@ export default function AdminSetup() {
     setNewClient({ name: '', email: '' })
   }
 
-  const generateOAuthLink = (clientId) => {
-    const authUrl = getAuthUrl()
-    window.open(`${authUrl}&state=${clientId}`, '_blank')
-  }
+  const generateOAuthLink = async (clientId) => {
+      const res = await fetch('/api/auth/url')
+      const data = await res.json()
+      window.open(`${data.url}&state=${clientId}`, '_blank')
+    }
 
   const saveSettings = async () => {
     await fetch(`/api/admin/clients/${selectedClient}/settings`, {
@@ -74,7 +75,7 @@ export default function AdminSetup() {
   return (
     <div style={{ padding: '20px' }}>
       <h1>Sales Assistant Setup</h1>
-      
+
       <section>
         <h2>Create Client</h2>
         <input
