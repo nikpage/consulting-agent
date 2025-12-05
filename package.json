@@ -1,17 +1,22 @@
 {
-  "name": "consulting-sales-agent",
+  "name": "sales-assistant",
   "version": "1.0.0",
-  "description": "AI Sales Assistant for Consulting Services",
-  "main": "index.ts",
+  "description": "",
+  "main": "index.js",
   "scripts": {
-    "start": "ts-node index.ts",
-    "build": "tsc"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
   },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
   "dependencies": {
-    "typescript": "^5.0.0",
-    "ts-node": "^10.9.0",
-    "@types/node": "^18.0.0"
-  },
-  "author": "Consulting Firm",
-  "license": "ISC"
+    "@google/generative-ai": "^0.24.1",
+    "@supabase/supabase-js": "^2.86.2",
+    "googleapis": "^167.0.0",
+    "next": "^16.0.7",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1"
+  }
 }
