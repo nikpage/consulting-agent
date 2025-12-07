@@ -8,6 +8,7 @@ import { setCredentials } from '../../lib/google-auth';
 import { generateEmbedding, storeEmbedding } from '../../lib/embeddings';
 import { findOrCreateThread, updateThreadSummary } from '../../lib/threading';
 import { renewIfExpiring } from '../../lib/calendar-setup';
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY
@@ -68,8 +69,8 @@ export default async function handler(req, res) {
             // ROBUST FILTER: Matches Czech chars OR the Agent ID (ASCII)
             const subj = emailData.subject || '';
             if (
-                subj.includes('Denní Přehled') || 
-                subj.includes('Daily Brief') || 
+                subj.includes('Denní Přehled') ||
+                subj.includes('Daily Brief') ||
                 subj.includes('Special Agent 23') // <--- Failsafe for encoding issues
             ) {
                     stats.skipped++;
@@ -80,7 +81,7 @@ export default async function handler(req, res) {
             if (existing) {
                 console.log(`- Skipping known msg: ${subj.substring(0, 30)}...`);
                 stats.skipped++;
-                continue; 
+                continue;
             }
 
             console.log(`+ Processing NEW: ${subj.substring(0, 50)}...`);
@@ -111,7 +112,7 @@ export default async function handler(req, res) {
                 await supabase.from('cp_states').upsert({
                     cp_id: cpId, state: pipelineResult.state, summary_text: pipelineResult.summary, last_updated: new Date().toISOString()
                 });
-                
+
                 // SCHEDULE WITH RETRY
                 await withRetry(() => handleAction(supabase, client.id, cpId, pipelineResult, emailData));
             }
@@ -119,7 +120,6 @@ export default async function handler(req, res) {
             try { await gmail.users.messages.modify({ userId: 'me', id: msgStub.id, requestBody: { addLabelIds: ['STARRED'] } }); } catch (e) {}
 
             stats.messages++;
-            await wait(4000); // 4s throttle
 
             } catch (innerErr) {
             console.error(`❌ Msg Error ${msgStub.id}:`, innerErr.message);
