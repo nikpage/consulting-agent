@@ -57,7 +57,7 @@ export default async function handler(req, res) {
         await renewIfExpiring(supabase, client.id, tokens, client.settings || {});
 
         // LIMIT: Fetch only top 15 messages (No pagination loop)
-        const resList = await gmail.users.messages.list({ userId: 'me', q: 'newer_than:1d', maxResults: 15 });
+        const resList = await gmail.users.messages.list({ userId: 'me', q: 'newer_than:5d', maxResults: 15 });
         const messages = resList.data.messages || [];
 
         for (const msgStub of messages) {
