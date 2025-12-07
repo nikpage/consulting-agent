@@ -16,7 +16,7 @@ const supabase = createClient(
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // RETRY HELPER: Handles 503 Overload / 429 Rate Limits
-async function withRetry(operation, retries = 3, delay = 6000) {
+async function withRetry(operation, retries = 3, delay = 60000) {
     for (let i = 0; i < retries; i++) {
         try {
             return await operation();
