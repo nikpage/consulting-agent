@@ -1,12 +1,10 @@
-const { createClient } = require('@supabase/supabase-js');
-const { google } = require('googleapis');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-require('dotenv').config({ path: '.env.local' });
+import { createClient } from '@supabase/supabase-js';
+import { google } from 'googleapis';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY);
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// --- 1. Fetch Data ---
 async function getDailyData(userId) {
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
@@ -35,16 +33,14 @@ async function getDailyData(userId) {
     .select('topic, state, summary_text, last_updated, user_id')
     .gt('last_updated', yesterday.toISOString());
 
-  const myUpdates = updates || [];
+  const myUpdates = updates ? updates.filter(u => u.user_id === userId) : [];
 
   return { todos: todos || [], events: events || [], updates: myUpdates };
 }
 
-// --- 2. Generate Content (HTML) ---
 async function generateBrief(data, clientName) {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
 
-  // FIXED: Removed brackets from list items
   const todoList = data.todos.map(t => `<li><strong>ÚKOL:</strong> ${t.description} (Termín: ${t.due_date})</li>`).join('');
   const eventList = data.events.map(e => `<li><strong>UDÁLOST:</strong> ${e.location} @ ${e.start_time}</li>`).join('');
   const updateList = data.updates.map(u => `<li><strong>${u.topic}</strong> (${u.state}): ${u.summary_text}</li>`).join('');
@@ -71,35 +67,33 @@ async function generateBrief(data, clientName) {
   try {
     const result = await model.generateContent(prompt);
     let text = result.response.text();
-    text = text.replace(/```html/g, '').replace(/```/g, '');
-    return text;
+    return text.replace(/```html/g, '').replace(/```/g, '');
   } catch (err) {
     console.error('GenAI Error:', err.message);
     return `<p>Error generating brief: ${err.message}</p>`;
   }
 }
 
-// --- 3. Send Email ---
 async function sendEmailToSelf(gmail, email, subject, bodyHtml) {
   const utf8Subject = Buffer.from(subject).toString('base64');
   const encodedSubject = `=?UTF-8?B?${utf8Subject}?=`;
 
-  const fullHtml = `
+  const fullHtml = \`
     <div style="font-family: Arial, sans-serif; font-size: 16px; line-height: 1.6; color: #333;">
-      ${bodyHtml}
+      \${bodyHtml}
       <br><br>
       <div style="font-size: 16px; font-weight: bold; color: #555;">
         S pozdravem,<br>
         Váš Výkonný Asistent Special Agent 23
       </div>
     </div>
-  `;
+  \`;
   
   const messageParts = [
     'Content-Type: text/html; charset=utf-8',
     'MIME-Version: 1.0',
     'To: ' + email,
-    `Subject: ${encodedSubject}`,
+    \`Subject: \${encodedSubject}\`,
     'Importance: High',
     'X-Priority: 1',
     '',
@@ -121,45 +115,45 @@ async function sendEmailToSelf(gmail, email, subject, bodyHtml) {
   });
 }
 
-// --- Main ---
-async function main() {
-  console.log('--- 🌅 Starting Daily Brief Generation ---');
-  
-  const { data: clients, error } = await supabase.from('users').select('*');
-  if (error) { console.error('DB Error:', error); return; }
-
-  for (const client of clients) {
-    if (!client.google_oauth_tokens) continue;
-
-    console.log(`Preparing brief for: ${client.email}`);
-    
-    try {
-      const dbData = await getDailyData(client.id);
-      const briefBody = await generateBrief(dbData, client.settings.name || 'Client');
-      
-      // FIXED: Mixed Language Subject Line
-      const subject = 'Denní Přehled od vašeho Special Agent 23';
-      
-      const tokens = typeof client.google_oauth_tokens === 'string' 
-        ? JSON.parse(client.google_oauth_tokens) 
-        : client.google_oauth_tokens;
-        
-      const oauth2Client = new google.auth.OAuth2(
-        process.env.GOOGLE_CLIENT_ID,
-        process.env.GOOGLE_CLIENT_SECRET,
-        process.env.GOOGLE_REDIRECT_URI
-      );
-      oauth2Client.setCredentials(tokens);
-      const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-
-      await sendEmailToSelf(gmail, client.email, subject, briefBody);
-      console.log(`✓ Sent to ${client.email}`);
-
-    } catch (err) {
-      console.error(`Error for ${client.email}:`, err.message);
-    }
+export default async function handler(req, res) {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
   }
-  console.log('--- Done ---');
-}
+  
+  try {
+    const { data: clients, error } = await supabase.from('users').select('*');
+    if (error) throw error;
 
-main();
+    for (const client of clients) {
+      if (!client.google_oauth_tokens) continue;
+
+      console.log(\`Preparing brief for: \${client.email}\`);
+      try {
+        const dbData = await getDailyData(client.id);
+        const briefBody = await generateBrief(dbData, client.settings.name || 'Client');
+        const subject = 'Denní Přehled od vašeho Special Agent 23';
+        
+        const tokens = typeof client.google_oauth_tokens === 'string' 
+          ? JSON.parse(client.google_oauth_tokens) 
+          : client.google_oauth_tokens;
+          
+        const oauth2Client = new google.auth.OAuth2(
+          process.env.GOOGLE_CLIENT_ID,
+          process.env.GOOGLE_CLIENT_SECRET,
+          process.env.GOOGLE_REDIRECT_URI
+        );
+        oauth2Client.setCredentials(tokens);
+        const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+        await sendEmailToSelf(gmail, client.email, subject, briefBody);
+        console.log(\`✓ Sent to \${client.email}\`);
+      } catch (err) {
+        console.error(\`Error for \${client.email}:\`, err.message);
+      }
+    }
+    res.status(200).json({ status: 'OK' });
+  } catch (fatalErr) {
+    console.error('Fatal Error:', fatalErr.message);
+    res.status(500).json({ error: fatalErr.message });
+  }
+}
