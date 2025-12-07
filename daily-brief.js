@@ -32,7 +32,7 @@ async function getDailyData(userId) {
   
   const { data: updates } = await supabase
     .from('conversation_threads')
-    .select('topic, state, summary_text, last_updated')
+    .select('topic, state, summary_text, last_updated, user_id')
     .gt('last_updated', yesterday.toISOString());
 
   const myUpdates = updates || [];
