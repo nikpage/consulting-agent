@@ -1,12 +1,1 @@
-{
-  "crons": [
-    {
-      "path": "/api/ingest",
-      "schedule": "*/10 * * * *"
-    },
-    {
-      "path": "/api/morning-brief",
-      "schedule": "0 6 * * *"
-    }
-  ]
-}
+{"crons":[{"path":"/api/morning-brief","schedule":"0 6 * * *"}]}
