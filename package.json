@@ -14,8 +14,11 @@
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "@supabase/supabase-js": "^2.86.2",
+    "dotenv": "^17.2.3",
     "googleapis": "^167.0.0",
+    "jsdom": "^27.2.0",
     "next": "^16.0.7",
+    "nodemailer": "^7.0.11",
     "react": "^19.2.1",
     "react-dom": "^19.2.1"
   }
