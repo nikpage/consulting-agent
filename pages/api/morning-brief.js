@@ -78,22 +78,22 @@ async function sendEmailToSelf(gmail, email, subject, bodyHtml) {
   const utf8Subject = Buffer.from(subject).toString('base64');
   const encodedSubject = `=?UTF-8?B?${utf8Subject}?=`;
 
-  const fullHtml = \`
+  const fullHtml = `
     <div style="font-family: Arial, sans-serif; font-size: 16px; line-height: 1.6; color: #333;">
-      \${bodyHtml}
+      ${bodyHtml}
       <br><br>
       <div style="font-size: 16px; font-weight: bold; color: #555;">
         S pozdravem,<br>
         Váš Výkonný Asistent Special Agent 23
       </div>
     </div>
-  \`;
+  `;
   
   const messageParts = [
     'Content-Type: text/html; charset=utf-8',
     'MIME-Version: 1.0',
     'To: ' + email,
-    \`Subject: \${encodedSubject}\`,
+    `Subject: ${encodedSubject}`,
     'Importance: High',
     'X-Priority: 1',
     '',
@@ -127,7 +127,6 @@ export default async function handler(req, res) {
     for (const client of clients) {
       if (!client.google_oauth_tokens) continue;
 
-      console.log(\`Preparing brief for: \${client.email}\`);
       try {
         const dbData = await getDailyData(client.id);
         const briefBody = await generateBrief(dbData, client.settings.name || 'Client');
@@ -146,12 +145,14 @@ export default async function handler(req, res) {
         const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
         await sendEmailToSelf(gmail, client.email, subject, briefBody);
-        console.log(\`✓ Sent to \${client.email}\`);
+        console.log(`✓ Sent to ${client.email}`);
       } catch (err) {
-        console.error(\`Error for \${client.email}:\`, err.message);
+        console.error(`Error for ${client.email}:`, err.message);
       }
     }
+    
     res.status(200).json({ status: 'OK' });
+    
   } catch (fatalErr) {
     console.error('Fatal Error:', fatalErr.message);
     res.status(500).json({ error: fatalErr.message });
