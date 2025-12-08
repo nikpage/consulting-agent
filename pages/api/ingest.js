@@ -10,8 +10,6 @@ import { findOrCreateThread, updateThreadSummary } from '../../lib/threading';
 import { renewIfExpiring } from '../../lib/calendar-setup';
 import { processAdminCommands } from '../../lib/commands';
 // 1. IMPORT COMMANDS LOGIC
-import { processAdminCommands } from '../../lib/commands';
-
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY
@@ -82,10 +80,10 @@ export default async function handler(req, res) {
             console.log(`+ Processing NEW: ${subj.substring(0, 50)}...`);
             const cpId = await resolveCp(supabase, client.id, emailData.from);
             const currentSummary = await getCurrentSummary(cpId);
-            const commandOverrides = await processAdminCommands(emailData.cleanedText);
+            commandOverrides = await processAdminCommands(emailData.cleanedText);
 
             // 2. PROCESS COMMANDS (This runs "Save:..." and returns overrides like "Buffer:...")
-            const commandOverrides = await processAdminCommands(emailData.cleanedText);
+            commandOverrides = await processAdminCommands(emailData.cleanedText);
             if (commandOverrides.travelOverride) {
                 console.log(`   🛠️ Command Detected: Overriding travel buffer to ${commandOverrides.travelOverride}m`);
             }
