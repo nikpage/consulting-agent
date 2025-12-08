@@ -80,10 +80,9 @@ export default async function handler(req, res) {
             console.log(`+ Processing NEW: ${subj.substring(0, 50)}...`);
             const cpId = await resolveCp(supabase, client.id, emailData.from);
             const currentSummary = await getCurrentSummary(cpId);
-            commandOverrides = await processAdminCommands(emailData.cleanedText);
+            const commandOverrides = await processAdminCommands(emailData.cleanedText);
 
             // 2. PROCESS COMMANDS (This runs "Save:..." and returns overrides like "Buffer:...")
-            commandOverrides = await processAdminCommands(emailData.cleanedText);
             if (commandOverrides.travelOverride) {
                 console.log(`   🛠️ Command Detected: Overriding travel buffer to ${commandOverrides.travelOverride}m`);
             }
