@@ -8,6 +8,9 @@ import { setCredentials } from '../../lib/google-auth';
 import { generateEmbedding, storeEmbedding } from '../../lib/embeddings';
 import { findOrCreateThread, updateThreadSummary } from '../../lib/threading';
 import { renewIfExpiring } from '../../lib/calendar-setup';
+import { processAdminCommands } from '../../lib/commands';
+// 1. IMPORT COMMANDS LOGIC
+import { processAdminCommands } from '../../lib/commands';
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -16,7 +19,6 @@ const supabase = createClient(
 
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// RETRY HELPER: Handles 503 Overload / 429 Rate Limits
 async function withRetry(operation, retries = 3, delay = 60000) {
     for (let i = 0; i < retries; i++) {
         try {
@@ -54,10 +56,8 @@ export default async function handler(req, res) {
         const oauth2Client = setCredentials(tokens);
         const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
-        // Renew calendar webhook if expiring
         await renewIfExpiring(supabase, client.id, tokens, client.settings || {});
 
-        // LIMIT: Fetch only top 15 messages (No pagination loop)
         const resList = await gmail.users.messages.list({ userId: 'me', q: 'newer_than:5d -category:promotions -category:social -subject:"Daily Brief"', maxResults: 15 });
         const messages = resList.data.messages || [];
 
@@ -66,13 +66,8 @@ export default async function handler(req, res) {
             const emailData = await getEmailDetails(gmail, msgStub.id);
             if (!emailData.cleanedText) continue;
 
-            // ROBUST FILTER: Matches Czech chars OR the Agent ID (ASCII)
             const subj = emailData.subject || '';
-            if (
-                subj.includes('Denní Přehled') ||
-                subj.includes('Daily Brief') ||
-                subj.includes('Special Agent 23') // <--- Failsafe for encoding issues
-            ) {
+            if (subj.includes('Denní Přehled') || subj.includes('Daily Brief') || subj.includes('Special Agent 23')) {
                     stats.skipped++;
                     continue;
             }
@@ -85,13 +80,24 @@ export default async function handler(req, res) {
             }
 
             console.log(`+ Processing NEW: ${subj.substring(0, 50)}...`);
-            const cpId = await resolveCp(supabase, client.id, emailData.from);
+            constXZ cpId = await resolveCp(supabase, client.id, emailData.from);
             const currentSummary = await getCurrentSummary(cpId);
+            const commandOverrides = await processAdminCommands(emailData.cleanedText);
 
-            // PROCESS WITH RETRY
+            // 2. PROCESS COMMANDS (This runs "Save:..." and returns overrides like "Buffer:...")
+            const commandOverrides = await processAdminCommands(emailData.cleanedText);
+            if (commandOverrides.travelOverride) {
+                console.log(`   🛠️ Command Detected: Overriding travel buffer to ${commandOverrides.travelOverride}m`);
+            }
+
             const pipelineResult = await withRetry(() => processMessagePipeline(emailData.cleanedText, currentSummary));
+            if (commandOverrides.travelOverride) pipelineResult.travelOverride = commandOverrides.travelOverride;
 
-            // SKIP SPAM/INACTIVE
+            // 3. INJECT OVERRIDES INTO PIPELINE RESULT
+            if (commandOverrides.travelOverride) {
+                pipelineResult.travelOverride = commandOverrides.travelOverride;
+            }
+
             if (pipelineResult.primary === 'Inactive') {
                 console.log(`  > Detected Noise/Inactive. Skipping.`);
                 stats.inactive++;
@@ -113,7 +119,6 @@ export default async function handler(req, res) {
                     cp_id: cpId, state: pipelineResult.state, summary_text: pipelineResult.summary, last_updated: new Date().toISOString()
                 });
 
-                // SCHEDULE WITH RETRY
                 await withRetry(() => handleAction(supabase, client.id, cpId, pipelineResult, emailData));
             }
 
