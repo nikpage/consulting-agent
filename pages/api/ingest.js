@@ -80,7 +80,7 @@ export default async function handler(req, res) {
             }
 
             console.log(`+ Processing NEW: ${subj.substring(0, 50)}...`);
-            constXZ cpId = await resolveCp(supabase, client.id, emailData.from);
+            const cpId = await resolveCp(supabase, client.id, emailData.from);
             const currentSummary = await getCurrentSummary(cpId);
             const commandOverrides = await processAdminCommands(emailData.cleanedText);
 
