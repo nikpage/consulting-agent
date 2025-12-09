@@ -1,5 +1,11 @@
+import { Buffer } from 'buffer';
 import { createClient } from '@supabase/supabase-js';
 import { google } from 'googleapis';
+<<<<<<< Updated upstream
+=======
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import { getOAuth2Client } from '../../lib/google-auth';
+>>>>>>> Stashed changes
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY);
 
@@ -388,11 +394,7 @@ export default async function handler(req, res) {
           ? JSON.parse(client.google_oauth_tokens) 
           : client.google_oauth_tokens;
           
-        const oauth2Client = new google.auth.OAuth2(
-          process.env.GOOGLE_CLIENT_ID,
-          process.env.GOOGLE_CLIENT_SECRET,
-          process.env.GOOGLE_REDIRECT_URI
-        );
+        const oauth2Client = getOAuth2Client();
         oauth2Client.setCredentials(tokens);
         
         const dbData = await getDailyData(client.id, oauth2Client);
