@@ -28,9 +28,98 @@ export default async function handler(req, res) {
       .eq('id', userId)
       .single();
 
+<<<<<<< Updated upstream
     if (userError || !user || !user.google_oauth_tokens) {
       console.error('[INGEST] User auth missing', userError);
       return res.status(401).json({ error: 'User not authenticated' });
+=======
+    for (const client of clients) {
+      console.log(`\n--- Processing Client: ${client.email} ---`);
+      try {
+        const tokens = typeof client.google_oauth_tokens === 'string' ? JSON.parse(client.google_oauth_tokens) : client.google_oauth_tokens;
+        const oauth2Client = setCredentials(tokens);
+        const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+        await renewIfExpiring(supabase, client.id, tokens, client.settings || {});
+
+        const resList = await gmail.users.messages.list({ userId: 'me', q: 'newer_than:5d -category:promotions -category:social -subject:"Daily Brief"', maxResults: 15 });
+        const messages = resList.data.messages || [];
+
+        for (const msgStub of messages) {
+            try {
+            const emailData = await getEmailDetails(gmail, msgStub.id);
+            if (!emailData.cleanedText) continue;
+
+            const subj = emailData.subject || '';
+            if (subj.includes('Denní Přehled') || subj.includes('Daily Brief') || subj.includes('')) {
+                    stats.skipped++;
+                    continue;
+            }
+
+            const { data: existing } = await supabase.from('messages').select('id').eq('id', emailData.id).maybeSingle();
+            if (existing) {
+                console.log(`- Skipping known msg: ${subj.substring(0, 30)}...`);
+                stats.skipped++;
+                continue;
+            }
+
+            console.log(`+ Processing NEW: ${subj.substring(0, 50)}...`);
+            const cpId = await resolveCp(supabase, client.id, emailData.from);
+            const currentSummary = await getCurrentSummary(cpId);
+            const commandOverrides = await processAdminCommands(emailData.cleanedText);
+
+            // 2. PROCESS COMMANDS (This runs "Save:..." and returns overrides like "Buffer:...")
+            if (commandOverrides.travelOverride) {
+                console.log(`   🛠️ Command Detected: Overriding travel buffer to ${commandOverrides.travelOverride}m`);
+            }
+
+            const pipelineResult = await withRetry(() => processMessagePipeline(emailData.cleanedText, currentSummary));
+            if (commandOverrides.travelOverride) pipelineResult.travelOverride = commandOverrides.travelOverride;
+
+            // 3. INJECT OVERRIDES INTO PIPELINE RESULT
+            if (commandOverrides.travelOverride) {
+                pipelineResult.travelOverride = commandOverrides.travelOverride;
+            }
+
+            if (pipelineResult.primary === 'Inactive') {
+                console.log(`  > Detected Noise/Inactive. Skipping.`);
+                stats.inactive++;
+                continue;
+            }
+
+            await storeMessage(supabase, client.id, cpId, emailData);
+            const embedding = await generateEmbedding(emailData.cleanedText);
+            await storeEmbedding(supabase, emailData.id, embedding);
+            const threadId = await findOrCreateThread(supabase, client.id, cpId, emailData.cleanedText, emailData.id);
+            if (threadId) await supabase.from('messages').update({ thread_id: threadId }).eq('id', emailData.id);
+            if (threadId) await updateThreadSummary(supabase, threadId);
+
+            if (pipelineResult.primary === 'Inactive') {
+                console.log(`  > Detected Noise/Inactive. No actions taken.`);
+                stats.inactive++;
+            } else {
+                await supabase.from('cp_states').upsert({
+                    cp_id: cpId, state: pipelineResult.state, summary_text: pipelineResult.summary, last_updated: new Date().toISOString()
+                });
+
+                await withRetry(() => handleAction(supabase, client.id, cpId, pipelineResult, emailData));
+            }
+
+            try { await gmail.users.messages.modify({ userId: 'me', id: msgStub.id, requestBody: { addLabelIds: ['STARRED'] } }); } catch (e) {}
+
+            stats.messages++;
+
+            } catch (innerErr) {
+            console.error(`❌ Msg Error ${msgStub.id}:`, innerErr.message);
+            stats.errors++;
+            }
+        }
+
+      } catch (clientErr) {
+        console.error(`Client Error ${client.email}:`, clientErr.message);
+        stats.errors++;
+      }
+>>>>>>> Stashed changes
     }
 
     const oauth2Client = getOAuth2Client();

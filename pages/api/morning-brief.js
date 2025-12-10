@@ -1,355 +1,94 @@
-import { Buffer } from 'buffer';
+import { Buffer } from "buffer";
 import { createClient } from '@supabase/supabase-js';
 import { google } from 'googleapis';
-<<<<<<< Updated upstream
-=======
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { getOAuth2Client } from '../../lib/google-auth';
->>>>>>> Stashed changes
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY);
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-async function getCalendarEvents(oauth2Client, startDate, endDate) {
-  const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-  const res = await calendar.events.list({
-    calendarId: 'primary',
-    timeMin: startDate.toISOString(),
-    timeMax: endDate.toISOString(),
-    singleEvents: true,
-    orderBy: 'startTime'
-  });
-  return res.data.items || [];
-}
-
-function findCalendarConflicts(events) {
-  const conflicts = [];
-  const sorted = events
-    .filter(e => e.start.dateTime)
-    .sort((a, b) => new Date(a.start.dateTime) - new Date(b.start.dateTime));
-  
-  for (let i = 0; i < sorted.length - 1; i++) {
-    const current = sorted[i];
-    const next = sorted[i + 1];
-    const currentEnd = new Date(current.end.dateTime);
-    const nextStart = new Date(next.start.dateTime);
-    
-    if (currentEnd > nextStart) {
-      const conflictTime = new Date(next.start.dateTime);
-      const existing = conflicts.find(c => Math.abs(c.time - conflictTime) < 60000);
-      
-      if (existing) {
-        if (!existing.events.find(e => e.name === next.summary)) {
-          existing.events.push({ name: next.summary, location: next.location });
-        }
-      } else {
-        conflicts.push({
-          date: conflictTime,
-          time: conflictTime,
-          events: [
-            { name: current.summary, location: current.location },
-            { name: next.summary, location: next.location }
-          ]
-        });
-      }
-    }
-  }
-  return conflicts;
-}
-
-function isToday(date) {
-  const today = new Date();
-  return date.toDateString() === today.toDateString();
-}
-
-async function getDailyData(userId, oauth2Client) {
-  const now = new Date();
-  const todayStart = new Date(now);
+async function getDailyData(userId) {
+  const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
-  const todayEnd = new Date(now);
+  const todayEnd = new Date();
   todayEnd.setHours(23, 59, 59, 999);
-  
-  const tomorrowStart = new Date(todayStart);
-  tomorrowStart.setDate(tomorrowStart.getDate() + 1);
-  const tomorrowEnd = new Date(todayEnd);
-  tomorrowEnd.setDate(tomorrowEnd.getDate() + 1);
 
-  // 5 working days from now
-  const fiveWorkingDays = new Date(now);
-  let daysAdded = 0;
-  while (daysAdded < 5) {
-    fiveWorkingDays.setDate(fiveWorkingDays.getDate() + 1);
-    const day = fiveWorkingDays.getDay();
-    if (day !== 0 && day !== 6) daysAdded++;
-  }
-
-  // 30 days from now
-  const thirtyDays = new Date(now);
-  thirtyDays.setDate(thirtyDays.getDate() + 30);
-
-  // Today's todos
-  const { data: todayTodos } = await supabase
+  const { data: todos } = await supabase
     .from('todos')
-    .select('*, cps(name)')
+    .select('*')
     .eq('user_id', userId)
     .in('status', ['pending', 'in_progress'])
-    .eq('due_date', todayStart.toISOString().split('T')[0]);
+    .lte('due_date', todayEnd.toISOString().split('T')[0]);
 
-  // Tomorrow's todos
-  const { data: tomorrowTodos } = await supabase
-    .from('todos')
-    .select('*, cps(name)')
+  const { data: events } = await supabase
+    .from('events')
+    .select('*')
     .eq('user_id', userId)
-    .in('status', ['pending', 'in_progress'])
-    .eq('due_date', tomorrowStart.toISOString().split('T')[0]);
+    .gte('start_time', todayStart.toISOString())
+    .lte('start_time', todayEnd.toISOString());
 
-  // Calendar events
-  const todayCalEvents = await getCalendarEvents(oauth2Client, todayStart, todayEnd);
-  const calEvents5Days = await getCalendarEvents(oauth2Client, tomorrowStart, fiveWorkingDays);
-  const calEvents30Days = await getCalendarEvents(oauth2Client, fiveWorkingDays, thirtyDays);
-  
-  const todayConflicts = findCalendarConflicts(todayCalEvents);
-  const conflicts5Days = findCalendarConflicts(calEvents5Days);
-  const conflicts30Days = findCalendarConflicts(calEvents30Days);
-
-  // Mark today's events that are in conflict
-  const conflictTimes = todayConflicts.map(c => c.time.getTime());
-  const todayEventsWithConflict = todayCalEvents
-    .filter(e => e.start.dateTime)
-    .map(e => {
-      const startTime = new Date(e.start.dateTime).getTime();
-      const isConflict = conflictTimes.some(ct => Math.abs(ct - startTime) < 3600000);
-      return { ...e, isConflict };
-    });
-
-  // Event changes since last brief (last 24h)
-  const yesterday = new Date(now);
+  const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   
-  const { data: eventChanges } = await supabase
-    .from('events')
-    .select('*, cps(name)')
-    .eq('user_id', userId)
-    .gt('created_at', yesterday.toISOString());
-
-  // Conversation threads with participants
-  const { data: threads } = await supabase
+  const { data: updates } = await supabase
     .from('conversation_threads')
-    .select('id, topic, state, summary_text, last_updated')
-    .eq('user_id', userId)
-    .gt('last_updated', yesterday.toISOString())
-    .order('last_updated', { ascending: false });
+    .select('topic, state, summary_text, last_updated, user_id')
+    .gt('last_updated', yesterday.toISOString());
 
-  const threadIds = (threads || []).map(t => t.id);
-  const { data: participants } = await supabase
-    .from('thread_participants')
-    .select('thread_id, cp_id, cps(name)')
-    .in('thread_id', threadIds.length > 0 ? threadIds : ['00000000-0000-0000-0000-000000000000']);
+  const myUpdates = updates ? updates.filter(u => u.user_id === userId) : [];
 
-  const threadsWithCPs = (threads || []).map(t => {
-    const ps = (participants || []).filter(p => p.thread_id === t.id);
-    const cpNames = ps.map(p => p.cps?.name).filter(Boolean);
-    return { ...t, cpNames };
-  });
-
-  return {
-    todayTodos: todayTodos || [],
-    tomorrowTodos: tomorrowTodos || [],
-    todayEvents: todayEventsWithConflict,
-    conflicts5Days,
-    conflicts30Days,
-    eventChanges: eventChanges || [],
-    threads: threadsWithCPs
-  };
+  return { todos: todos || [], events: events || [], updates: myUpdates };
 }
 
-function formatTime(dateOrString) {
-  const d = typeof dateOrString === 'string' ? new Date(dateOrString) : dateOrString;
-  return d.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' });
-}
+async function generateBrief(data, clientName) {
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
 
-function formatDate(dateOrString) {
-  const d = typeof dateOrString === 'string' ? new Date(dateOrString) : dateOrString;
-  return d.toLocaleDateString('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric' });
-}
+  const todoList = data.todos.map(t => `<li><strong>ÚKOL:</strong> ${t.description} (Termín: ${t.due_date})</li>`).join('');
+  const eventList = data.events.map(e => `<li><strong>UDÁLOST:</strong> ${e.location} @ ${e.start_time}</li>`).join('');
+  const updateList = data.updates.map(u => `<li><strong>${u.topic}</strong> (${u.state}): ${u.summary_text}</li>`).join('');
 
-function extractTopic(thread) {
-  let topic = thread.topic || '';
-  topic = topic.replace(/^Conversation with .+$/i, '').trim();
-  
-  if (!topic && thread.summary_text) {
-    const lines = thread.summary_text.split('\n').filter(l => l.trim());
-    if (lines.length > 0) {
-      topic = lines[0].substring(0, 60);
-      if (lines[0].length > 60) topic += '...';
-    }
-  }
-  
-  return topic || 'Obecné';
-}
+  const prompt = `
+    Role: Executive Assistant.
+    Task: Write the body of a daily briefing email for ${clientName}.
+    Language: Czech (cs-CZ).
+    Format: HTML (use <p>, <ul>, <li>, <strong>). Do NOT include <html> or <body> tags.
+    Style: Professional, concise, larger font friendly.
 
-function groupThreadsByTopic(threads) {
-  const grouped = {};
-  
-  for (const t of threads) {
-    const cpName = t.cpNames?.join(', ') || 'Neznámý';
-    const topic = extractTopic(t);
-    const key = `${cpName}|||${topic}`;
-    
-    if (!grouped[key]) {
-      grouped[key] = { cpName, topic, summaries: [] };
-    }
-    
-    if (t.summary_text) {
-      let summary = t.summary_text
-        .replace(/^Conversation with .+\n*/i, '')
-        .replace(/\r\n/g, ' ')
-        .replace(/\n/g, ' ')
-        .trim();
-      
-      if (summary.length > 150) {
-        summary = summary.substring(0, 150) + '...';
-      }
-      
-      grouped[key].summaries.push(summary);
-    }
-  }
-  
-  return Object.values(grouped);
-}
+    Input Data:
+    Tasks: ${todoList ? '<ul>' + todoList + '</ul>' : 'Žádné úkoly.'}
+    Events: ${eventList ? '<ul>' + eventList + '</ul>' : 'Žádné události.'}
+    Activity: ${updateList ? '<ul>' + updateList + '</ul>' : 'Žádné aktualizace.'}
 
-function generateBriefHtml(data, clientName) {
-  let html = `<p>Dobrý den ${clientName},</p>`;
+    Structure:
+    1. Greeting (Dobrý den...)
+    2. Sections for Úkoly, Události, and Aktivity.
+    3. Closing sentence (encouraging).
+    Do NOT add a signature.
+  `;
 
-  // === HIGHLIGHTS - HIGH VALUE INFO ONLY ===
-  html += `<h2 style="color:#1a5f7a;border-bottom:2px solid #1a5f7a;">⚡ Hlavní body</h2>`;
-  
-  let highlights = [];
-  
-  // Specific event changes
-  if (data.eventChanges.length > 0) {
-    for (const e of data.eventChanges) {
-      const cp = e.cps?.name || '';
-      highlights.push(`📅 <strong>${e.title}</strong>${cp ? ' (' + cp + ')' : ''} - ${formatDate(e.start_time)} ${formatTime(e.start_time)}`);
-    }
+  try {
+    const result = await model.generateContent(prompt);
+    let text = result.response.text();
+    return text.replace(/```html/g, '').replace(/```/g, '');
+  } catch (err) {
+    console.error('GenAI Error:', err.message);
+    return `<p>Error generating brief: ${err.message}</p>`;
   }
-  
-  // Specific conflicts today
-  if (data.todayEvents.filter(e => e.isConflict).length > 0) {
-    highlights.push(`🔴 <strong>Dnes máte konflikty v kalendáři!</strong> Viz agenda níže.`);
-  }
-  
-  // Urgent communications
-  const urgentThreads = data.threads.filter(t => t.state === 'closing' || t.state === 'negotiating');
-  for (const t of urgentThreads.slice(0, 3)) {
-    const cp = t.cpNames?.join(', ') || '';
-    highlights.push(`💬 <strong>${cp}</strong>: ${t.state === 'closing' ? 'Blízko uzavření' : 'Probíhá jednání'}`);
-  }
-  
-  if (highlights.length === 0) {
-    highlights.push('✅ Žádné urgentní záležitosti.');
-  }
-  
-  html += `<ul>${highlights.map(h => `<li>${h}</li>`).join('')}</ul>`;
-
-  // === TODAY'S AGENDA (with conflicts flagged) ===
-  html += `<h2 style="color:#1a5f7a;border-bottom:2px solid #1a5f7a;">📅 Dnešní agenda</h2>`;
-  
-  if (data.todayEvents.length > 0) {
-    html += `<table style="width:100%;border-collapse:collapse;font-size:14px;">`;
-    html += `<tr style="background:#f0f0f0;"><th style="text-align:left;padding:8px;">Čas</th><th style="text-align:left;padding:8px;">Schůzka</th><th style="text-align:left;padding:8px;">Místo</th></tr>`;
-    for (const e of data.todayEvents) {
-      const rowStyle = e.isConflict 
-        ? 'border-bottom:1px solid #ddd;background:#fee;color:#c00;' 
-        : 'border-bottom:1px solid #ddd;';
-      const conflictFlag = e.isConflict ? ' ⚠️' : '';
-      html += `<tr style="${rowStyle}">`;
-      html += `<td style="padding:8px;">${formatTime(e.start.dateTime)}${conflictFlag}</td>`;
-      html += `<td style="padding:8px;">${e.summary || '-'}</td>`;
-      html += `<td style="padding:8px;">${e.location || '-'}</td>`;
-      html += `</tr>`;
-    }
-    html += `</table>`;
-  } else {
-    html += `<p>Žádné schůzky na dnes.</p>`;
-  }
-
-  // === NEXT 4 DAYS CONFLICTS (only if any) ===
-  if (data.conflicts5Days.length > 0) {
-    html += `<h3 style="color:#c00;">⚠️ Konflikty - příští 4 dny</h3>`;
-    html += `<table style="width:100%;border-collapse:collapse;font-size:14px;">`;
-    html += `<tr style="background:#fee;"><th style="text-align:left;padding:8px;">Datum</th><th style="text-align:left;padding:8px;">Čas</th><th style="text-align:left;padding:8px;">Kolidující schůzky</th></tr>`;
-    for (const c of data.conflicts5Days) {
-      html += `<tr style="border-bottom:1px solid #ddd;">`;
-      html += `<td style="padding:8px;">${formatDate(c.date)}</td>`;
-      html += `<td style="padding:8px;">${formatTime(c.time)}</td>`;
-      html += `<td style="padding:8px;"><ul style="margin:0;padding-left:20px;">${c.events.map(e => `<li>${e.name}${e.location ? ' @ ' + e.location : ''}</li>`).join('')}</ul></td>`;
-      html += `</tr>`;
-    }
-    html += `</table>`;
-  }
-
-  // === NEXT 25 DAYS CONFLICTS (only if any) ===
-  if (data.conflicts30Days.length > 0) {
-    html += `<h3 style="color:#c00;">⚠️ Konflikty - příštích 25 dní</h3>`;
-    html += `<table style="width:100%;border-collapse:collapse;font-size:14px;">`;
-    html += `<tr style="background:#fee;"><th style="text-align:left;padding:8px;">Datum</th><th style="text-align:left;padding:8px;">Čas</th><th style="text-align:left;padding:8px;">Kolidující schůzky</th></tr>`;
-    for (const c of data.conflicts30Days) {
-      html += `<tr style="border-bottom:1px solid #ddd;">`;
-      html += `<td style="padding:8px;">${formatDate(c.date)}</td>`;
-      html += `<td style="padding:8px;">${formatTime(c.time)}</td>`;
-      html += `<td style="padding:8px;"><ul style="margin:0;padding-left:20px;">${c.events.map(e => `<li>${e.name}${e.location ? ' @ ' + e.location : ''}</li>`).join('')}</ul></td>`;
-      html += `</tr>`;
-    }
-    html += `</table>`;
-  }
-
-  // === TODAY'S TODOS ===
-  if (data.todayTodos.length > 0) {
-    html += `<h2 style="color:#1a5f7a;border-bottom:2px solid #1a5f7a;">✅ Dnešní úkoly</h2>`;
-    html += `<ul>`;
-    for (const t of data.todayTodos) {
-      const cp = t.cps?.name ? ` (${t.cps.name})` : '';
-      html += `<li>${t.description}${cp}</li>`;
-    }
-    html += `</ul>`;
-  }
-
-  // === TOMORROW'S TODOS ===
-  if (data.tomorrowTodos.length > 0) {
-    html += `<h2 style="color:#1a5f7a;border-bottom:2px solid #1a5f7a;">📋 Zítřejší úkoly</h2>`;
-    html += `<ul>`;
-    for (const t of data.tomorrowTodos) {
-      const cp = t.cps?.name ? ` (${t.cps.name})` : '';
-      html += `<li>${t.description}${cp}</li>`;
-    }
-    html += `</ul>`;
-  }
-
-  // === COMMUNICATIONS BRIEF ===
-  const grouped = groupThreadsByTopic(data.threads);
-  
-  if (grouped.length > 0) {
-    html += `<h2 style="color:#1a5f7a;border-bottom:2px solid #1a5f7a;">💬 Komunikace</h2>`;
-    for (const g of grouped) {
-      html += `<p style="margin-bottom:5px;"><strong>${g.cpName} - ${g.topic}:</strong></p>`;
-      html += `<ul style="margin-top:0;">`;
-      for (const s of g.summaries) {
-        html += `<li>${s}</li>`;
-      }
-      html += `</ul>`;
-    }
-  }
-
-  html += `<p style="margin-top:30px;">Hezký den,<br><strong>Váš Výkonný Asistent Special Agent 23</strong></p>`;
-  
-  return html;
 }
 
 async function sendEmailToSelf(gmail, email, subject, bodyHtml) {
   const utf8Subject = Buffer.from(subject).toString('base64');
   const encodedSubject = `=?UTF-8?B?${utf8Subject}?=`;
 
-  const fullHtml = `<div style="font-family: Arial, sans-serif; font-size: 16px; line-height: 1.6; color: #333;">${bodyHtml}</div>`;
+  const fullHtml = `
+    <div style="font-family: Arial, sans-serif; font-size: 16px; line-height: 1.6; color: #333;">
+      ${bodyHtml}
+      <br><br>
+      <div style="font-size: 16px; font-weight: bold; color: #555;">
+        S pozdravem,<br>
+        Váš Výkonný Asistent Special Agent 23
+      </div>
+    </div>
+  `;
   
   const messageParts = [
     'Content-Type: text/html; charset=utf-8',
@@ -390,18 +129,19 @@ export default async function handler(req, res) {
       if (!client.google_oauth_tokens) continue;
 
       try {
+        const dbData = await getDailyData(client.id);
+        const briefBody = await generateBrief(dbData, client.settings.name || 'Client');
+        const subject = 'Denní Přehled od vašeho Special Agent 23';
+        
         const tokens = typeof client.google_oauth_tokens === 'string' 
           ? JSON.parse(client.google_oauth_tokens) 
           : client.google_oauth_tokens;
           
         const oauth2Client = getOAuth2Client();
+        );
         oauth2Client.setCredentials(tokens);
-        
-        const dbData = await getDailyData(client.id, oauth2Client);
-        const briefBody = generateBriefHtml(dbData, client.settings?.name || 'Client');
-        const subject = 'Denní Přehled od vašeho Special Agent 23';
-        
         const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
         await sendEmailToSelf(gmail, client.email, subject, briefBody);
         console.log(`✓ Sent to ${client.email}`);
       } catch (err) {
