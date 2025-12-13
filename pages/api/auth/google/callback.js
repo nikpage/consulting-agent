@@ -3,27 +3,28 @@ import { supabase } from '../../../../lib/supabase'
 
 export default async function handler(req, res) {
   const { code, state } = req.query
-
-  console.log('Callback received - state:', state, 'code:', code?.substring(0, 20))
-
-  if (!code) {
-    return res.status(400).json({ error: 'No code provided' })
-  }
+  if (!code) return res.status(400).json({ error: 'No code provided' })
 
   try {
-    const tokens = await getTokensFromCode(code)
-    console.log('Got tokens:', tokens ? 'yes' : 'no')
-    
-    const { data, error } = await supabase
+    const newTokens = await getTokensFromCode(code)
+
+    const { data: existing } = await supabase
       .from('users')
-      .update({ google_oauth_tokens: tokens })
+      .select('google_oauth_tokens')
       .eq('id', state)
-    
-    console.log('Update result - data:', data, 'error:', error)
-    
-    res.redirect('/admin/setup')
-  } catch (error) {
-    console.error('OAuth callback error:', error)
-    res.status(500).json({ error: error.message })
+      .maybeSingle()
+
+    const oldTokens = (typeof existing?.google_oauth_tokens === 'string')
+      ? JSON.parse(existing.google_oauth_tokens)
+      : existing?.google_oauth_tokens
+
+    if (!newTokens.refresh_token && oldTokens?.refresh_token) {
+      newTokens.refresh_token = oldTokens.refresh_token
+    }
+
+    await supabase.from('users').update({ google_oauth_tokens: newTokens }).eq('id', state)
+    return res.redirect('/admin/setup')
+  } catch (e) {
+    return res.status(500).json({ error: e.message })
   }
 }

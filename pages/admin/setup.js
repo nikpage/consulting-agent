@@ -1,26 +1,23 @@
-import { google } from "googleapis";
-import fs from "fs";
-import path from "path";
+import { useEffect, useState } from "react";
 
-export default async function handler(req, res) {
-  const { code } = req.query;
-  if (!code) return res.status(400).send("Missing code");
+export default function Setup() {
+  const [url, setUrl] = useState(null);
+  const [err, setErr] = useState(null);
 
-  const oauth2Client = new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    "http://localhost:3000/admin/setup"
+  useEffect(() => {
+    fetch("/api/auth/url")
+      .then(r => r.json())
+      .then(j => setUrl(j.url))
+      .catch(e => setErr(String(e)));
+  }, []);
+
+  if (err) return <pre>{err}</pre>;
+  if (!url) return <p>Loading…</p>;
+
+  return (
+    <div style={{fontFamily:"Arial", padding:20}}>
+      <h1>Connect Google</h1>
+      <p><a href={url} style={{fontSize:18}}>Sign in with Google</a></p>
+    </div>
   );
-
-  const { tokens } = await oauth2Client.getToken(code);
-
-  const dir = path.join(process.cwd(), "data");
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir);
-
-  fs.writeFileSync(
-    path.join(dir, "google_tokens.json"),
-    JSON.stringify(tokens, null, 2)
-  );
-
-  res.send("Authorization complete. You can close this tab.");
 }
