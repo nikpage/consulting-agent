@@ -2,400 +2,171 @@ import { Buffer } from 'buffer';
 import { createClient } from '@supabase/supabase-js';
 import { google } from 'googleapis';
 import { getOAuth2Client } from '../../lib/google-auth';
+import { signParams } from '../../lib/security';
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY);
+const BASE_URL = process.env.NEXTAUTH_URL || 'http://localhost:3000';
 
-async function getCalendarEvents(oauth2Client, startDate, endDate) {
-  const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-  const res = await calendar.events.list({
-    calendarId: 'primary',
-    timeMin: startDate.toISOString(),
-    timeMax: endDate.toISOString(),
-    singleEvents: true,
-    orderBy: 'startTime'
-  });
-  return res.data.items || [];
-}
-
-function findCalendarConflicts(events) {
-  const conflicts = [];
-  const sorted = events
-    .filter(e => e.start.dateTime)
-    .sort((a, b) => new Date(a.start.dateTime) - new Date(b.start.dateTime));
-
-  for (let i = 0; i < sorted.length - 1; i++) {
-    const current = sorted[i];
-    const next = sorted[i + 1];
-    const currentEnd = new Date(current.end.dateTime);
-    const nextStart = new Date(next.start.dateTime);
-
-    if (currentEnd > nextStart) {
-      const conflictTime = new Date(next.start.dateTime);
-      const existing = conflicts.find(c => Math.abs(c.time - conflictTime) < 60000);
-
-      if (existing) {
-        if (!existing.events.find(e => e.name === next.summary)) {
-          existing.events.push({ name: next.summary, location: next.location });
-        }
-      } else {
-        conflicts.push({
-          date: conflictTime,
-          time: conflictTime,
-          events: [
-            { name: current.summary, location: current.location },
-            { name: next.summary, location: next.location }
-          ]
-        });
-      }
-    }
-  }
-  return conflicts;
-}
-
-function isToday(date) {
-  const today = new Date();
-  return date.toDateString() === today.toDateString();
+// --- HELPERS ---
+function genLink(action, id, label, color, extra = {}) {
+  const params = { action, id, t: Date.now().toString(), ...extra };
+  const sig = signParams(params);
+  const query = new URLSearchParams({ ...params, sig }).toString();
+  return `<a href="${BASE_URL}/api/cmd?${query}" style="color:${color};text-decoration:none;font-size:12px;border:1px solid ${color};padding:2px 6px;border-radius:4px;margin-right:5px;">${label}</a>`;
 }
 
 async function getDailyData(userId, oauth2Client) {
   const now = new Date();
-  const todayStart = new Date(now);
-  todayStart.setHours(0, 0, 0, 0);
-  const todayEnd = new Date(now);
-  todayEnd.setHours(23, 59, 59, 999);
+  const today = now.toISOString().split('T')[0];
+  const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = tomorrow.toISOString().split('T')[0];
 
-  const tomorrowStart = new Date(todayStart);
-  tomorrowStart.setDate(tomorrowStart.getDate() + 1);
-  const tomorrowEnd = new Date(todayEnd);
-  tomorrowEnd.setDate(tomorrowEnd.getDate() + 1);
+  // Fetch Data
+  const { data: todos } = await supabase.from('todos').select('*, cps(name)').eq('user_id', userId).in('status', ['pending']).order('due_date');
+  const { data: threads } = await supabase.from('conversation_threads').select('*, thread_participants(cp_id)').eq('user_id', userId).order('priority_score', { ascending: false });
+  const { data: suggested } = await supabase.from('events').select('*').eq('user_id', userId).eq('status', 'suggested');
+  
+  // Calendar
+  const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+  const eventsRes = await calendar.events.list({ calendarId: 'primary', timeMin: now.toISOString(), timeMax: new Date(now.getTime() + 86400000).toISOString(), singleEvents: true, orderBy: 'startTime' });
 
-  // 5 working days from now
-  const fiveWorkingDays = new Date(now);
-  let daysAdded = 0;
-  while (daysAdded < 5) {
-    fiveWorkingDays.setDate(fiveWorkingDays.getDate() + 1);
-    const day = fiveWorkingDays.getDay();
-    if (day !== 0 && day !== 6) daysAdded++;
-  }
-
-  // 30 days from now
-  const thirtyDays = new Date(now);
-  thirtyDays.setDate(thirtyDays.getDate() + 30);
-
-  // Today's todos
-  const { data: todayTodos } = await supabase
-    .from('todos')
-    .select('*, cps(name)')
-    .eq('user_id', userId)
-    .in('status', ['pending', 'in_progress'])
-    .eq('due_date', todayStart.toISOString().split('T')[0]);
-
-  // Tomorrow's todos
-  const { data: tomorrowTodos } = await supabase
-    .from('todos')
-    .select('*, cps(name)')
-    .eq('user_id', userId)
-    .in('status', ['pending', 'in_progress'])
-    .eq('due_date', tomorrowStart.toISOString().split('T')[0]);
-
-  // Calendar events
-  const todayCalEvents = await getCalendarEvents(oauth2Client, todayStart, todayEnd);
-  const calEvents5Days = await getCalendarEvents(oauth2Client, tomorrowStart, fiveWorkingDays);
-  const calEvents30Days = await getCalendarEvents(oauth2Client, fiveWorkingDays, thirtyDays);
-
-  const todayConflicts = findCalendarConflicts(todayCalEvents);
-  const conflicts5Days = findCalendarConflicts(calEvents5Days);
-  const conflicts30Days = findCalendarConflicts(calEvents30Days);
-
-  // Mark today's events that are in conflict
-  const conflictTimes = todayConflicts.map(c => c.time.getTime());
-  const todayEventsWithConflict = todayCalEvents
-    .filter(e => e.start.dateTime)
-    .map(e => {
-      const startTime = new Date(e.start.dateTime).getTime();
-      const isConflict = conflictTimes.some(ct => Math.abs(ct - startTime) < 3600000);
-      return { ...e, isConflict };
-    });
-
-  // Event changes since last brief (last 24h)
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-
-  const { data: eventChanges } = await supabase
-    .from('events')
-    .select('*, cps(name)')
-    .eq('user_id', userId)
-    .gt('created_at', yesterday.toISOString());
-
-  // Conversation threads with participants
-  const { data: threads } = await supabase
-    .from('conversation_threads')
-    .select('id, topic, state, summary_text, last_updated')
-    .eq('user_id', userId)
-    .gt('last_updated', yesterday.toISOString())
-    .order('last_updated', { ascending: false });
-
-  const threadIds = (threads || []).map(t => t.id);
-  const { data: participants } = await supabase
-    .from('thread_participants')
-    .select('thread_id, cp_id, cps(name)')
-    .in('thread_id', threadIds.length > 0 ? threadIds : ['00000000-0000-0000-0000-000000000000']);
-
-  const threadsWithCPs = (threads || []).map(t => {
-    const ps = (participants || []).filter(p => p.thread_id === t.id);
-    const cpNames = ps.map(p => p.cps?.name).filter(Boolean);
-    return { ...t, cpNames };
-  });
-
-  return {
-    todayTodos: todayTodos || [],
-    tomorrowTodos: tomorrowTodos || [],
-    todayEvents: todayEventsWithConflict,
-    conflicts5Days,
-    conflicts30Days,
-    eventChanges: eventChanges || [],
-    threads: threadsWithCPs
-  };
+  return { todos, threads, suggested, calendar: eventsRes.data.items || [] };
 }
 
-function formatTime(dateOrString) {
-  const d = typeof dateOrString === 'string' ? new Date(dateOrString) : dateOrString;
-  return d.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' });
-}
+// --- GENERATOR ---
+function generateHtml(data, clientName) {
+  let html = `<div style="font-family:Arial,sans-serif; max-width:600px; margin:0 auto;">`;
+  html += `<h2 style="color:#333;">Dobrý den, ${clientName}</h2>`;
 
-function formatDate(dateOrString) {
-  const d = typeof dateOrString === 'string' ? new Date(dateOrString) : dateOrString;
-  return d.toLocaleDateString('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric' });
-}
-
-function extractTopic(thread) {
-  let topic = thread.topic || '';
-  topic = topic.replace(/^Conversation with .+$/i, '').trim();
-
-  if (!topic && thread.summary_text) {
-    const words = thread.summary_text.split(/\s+/).slice(0, 5).join(' ');
-    topic = words + '...';
-  }
-
-  return topic || 'Komunikace';
-}
-
-function groupThreadsByTopic(threads) {
-  const grouped = [];
-
-  for (const t of threads) {
-    const cpName = t.cpNames?.join(', ') || 'Neznámý';
-    const topic = extractTopic(t);
-    const summary = t.summary_text || 'Bez shrnutí';
-
-    const existing = grouped.find(g => g.cpName === cpName && g.topic === topic);
-    if (existing) {
-      existing.summaries.push(summary);
-    } else {
-      grouped.push({ cpName, topic, summaries: [summary] });
+  // 1. SUGGESTED EVENTS (Confirmation Required)
+  if (data.suggested?.length) {
+    html += `<div style="background:#FFF3E0; padding:10px; border-radius:5px; margin-bottom:20px;">
+      <h3 style="margin:0 0 10px; color:#E65100;">⚡ Potvrdit Schůzky</h3>`;
+    for (const e of data.suggested) {
+      html += `<div style="margin-bottom:10px; padding-bottom:5px; border-bottom:1px dashed #ccc;">
+        <strong>${new Date(e.start_time).toLocaleTimeString('cs-CZ', {hour:'2-digit',minute:'2-digit'})}</strong> ${e.title}<br>
+        ${genLink('confirm_event', e.id, '✅ ANO', 'green')} 
+        ${genLink('reject_event', e.id, '❌ NE', 'red')}
+      </div>`;
     }
+    html += `</div>`;
   }
 
-  return grouped;
-}
+  // 2. DEAL PULSE (Threads)
+  html += `<h3 style="border-bottom:2px solid #1a5f7a; color:#1a5f7a;">💬 Aktivita Obchodů</h3>`;
+  for (const t of data.threads) {
+    if (t.priority_score < 2 && t.state === 'idle') continue; // Skip low priority
 
-function generateBriefHtml(data, clientName) {
-  let html = `<h1 style="color:#1a5f7a;">Dobrý den, ${clientName}</h1>`;
-  html += `<p style="font-size:18px;"><strong>Váš přehled na ${formatDate(new Date())}</strong></p>`;
+    // Tags
+    const dealColor = t.deal_type === 'seller' ? '#F57C00' : '#388E3C'; // Orange vs Green
+    const dealLabel = t.deal_type === 'seller' ? 'PRODEJCE' : 'KUPUJÍCÍ';
+    
+    let stateColor = '#9E9E9E';
+    let stateLabel = 'LEAD';
+    if (t.state === 'negotiating') { stateColor = '#7B1FA2'; stateLabel = 'JEDNÁNÍ'; }
+    if (t.state === 'closing') { stateColor = '#D32F2F'; stateLabel = 'UZAVÍRÁNÍ'; }
 
-  // === KEY HIGHLIGHTS ===
-  html += `<h2 style="color:#1a5f7a;border-bottom:2px solid #1a5f7a;">🔑 Klíčové body</h2>`;
+    const cpId = t.thread_participants?.[0]?.cp_id;
 
-  let highlights = [];
-
-  // Specific event changes
-  if (data.eventChanges.length > 0) {
-    for (const e of data.eventChanges) {
-      const cp = e.cps?.name || '';
-      highlights.push(`📅 <strong>${e.title}</strong>${cp ? ' (' + cp + ')' : ''} - ${formatDate(e.start_time)} ${formatTime(e.start_time)}`);
-    }
+    html += `<div style="margin-bottom:15px;">
+      <span style="background:${dealColor};color:fff;padding:2px 5px;font-size:10px;font-weight:bold;border-radius:3px;">${dealLabel}</span>
+      <span style="background:${stateColor};color:fff;padding:2px 5px;font-size:10px;font-weight:bold;border-radius:3px;">${stateLabel}</span>
+      <strong> ${t.topic}</strong>
+      <p style="margin:5px 0; color:#555; font-size:14px;">${t.summary_text}</p>
+      
+      <div style="margin-top:5px;">
+        <span style="font-size:11px;color:#777;margin-right:5px;">Vytvořit úkol:</span>
+        ${genLink('create_todo', t.id, 'Dnes', '#1565C0', {val:'today', cp_id: cpId})}
+        ${genLink('create_todo', t.id, 'Zítra', '#1565C0', {val:'tomorrow', cp_id: cpId})}
+        ${genLink('create_todo', t.id, 'Později (5 dní)', '#1565C0', {val:'later', cp_id: cpId})}
+      </div>
+    </div>`;
   }
 
-  // Specific conflicts today
-  if (data.todayEvents.filter(e => e.isConflict).length > 0) {
-    highlights.push(`🔴 <strong>Dnes máte konflikty v kalendáři!</strong> Viz agenda níže.`);
-  }
-
-  // Urgent communications
-  const urgentThreads = data.threads.filter(t => t.state === 'closing' || t.state === 'negotiating');
-  for (const t of urgentThreads.slice(0, 3)) {
-    const cp = t.cpNames?.join(', ') || '';
-    highlights.push(`💬 <strong>${cp}</strong>: ${t.state === 'closing' ? 'Blízko uzavření' : 'Probíhá jednání'}`);
-  }
-
-  if (highlights.length === 0) {
-    highlights.push('✅ Žádné urgentní záležitosti.');
-  }
-
-  html += `<ul>${highlights.map(h => `<li>${h}</li>`).join('')}</ul>`;
-
-  // === TODAY'S AGENDA (with conflicts flagged) ===
-  html += `<h2 style="color:#1a5f7a;border-bottom:2px solid #1a5f7a;">📅 Dnešní agenda</h2>`;
-
-  if (data.todayEvents.length > 0) {
-    html += `<table style="width:100%;border-collapse:collapse;font-size:14px;">`;
-    html += `<tr style="background:#f0f0f0;"><th style="text-align:left;padding:8px;">Čas</th><th style="text-align:left;padding:8px;">Schůzka</th><th style="text-align:left;padding:8px;">Místo</th></tr>`;
-    for (const e of data.todayEvents) {
-      const rowStyle = e.isConflict
-        ? 'border-bottom:1px solid #ddd;background:#fee;color:#c00;'
-        : 'border-bottom:1px solid #ddd;';
-      const conflictFlag = e.isConflict ? ' ⚠️' : '';
-      html += `<tr style="${rowStyle}">`;
-      html += `<td style="padding:8px;">${formatTime(e.start.dateTime)}${conflictFlag}</td>`;
-      html += `<td style="padding:8px;">${e.summary || '-'}</td>`;
-      html += `<td style="padding:8px;">${e.location || '-'}</td>`;
-      html += `</tr>`;
-    }
-    html += `</table>`;
-  } else {
-    html += `<p>Žádné schůzky na dnes.</p>`;
-  }
-
-  // === NEXT 4 DAYS CONFLICTS (only if any) ===
-  if (data.conflicts5Days.length > 0) {
-    html += `<h3 style="color:#c00;">⚠️ Konflikty - příští 4 dny</h3>`;
-    html += `<table style="width:100%;border-collapse:collapse;font-size:14px;">`;
-    html += `<tr style="background:#fee;"><th style="text-align:left;padding:8px;">Datum</th><th style="text-align:left;padding:8px;">Čas</th><th style="text-align:left;padding:8px;">Kolidující schůzky</th></tr>`;
-    for (const c of data.conflicts5Days) {
-      html += `<tr style="border-bottom:1px solid #ddd;">`;
-      html += `<td style="padding:8px;">${formatDate(c.date)}</td>`;
-      html += `<td style="padding:8px;">${formatTime(c.time)}</td>`;
-      html += `<td style="padding:8px;"><ul style="margin:0;padding-left:20px;">${c.events.map(e => `<li>${e.name}${e.location ? ' @ ' + e.location : ''}</li>`).join('')}</ul></td>`;
-      html += `</tr>`;
-    }
-    html += `</table>`;
-  }
-
-  // === NEXT 25 DAYS CONFLICTS (only if any) ===
-  if (data.conflicts30Days.length > 0) {
-    html += `<h3 style="color:#c00;">⚠️ Konflikty - příštích 25 dní</h3>`;
-    html += `<table style="width:100%;border-collapse:collapse;font-size:14px;">`;
-    html += `<tr style="background:#fee;"><th style="text-align:left;padding:8px;">Datum</th><th style="text-align:left;padding:8px;">Čas</th><th style="text-align:left;padding:8px;">Kolidující schůzky</th></tr>`;
-    for (const c of data.conflicts30Days) {
-      html += `<tr style="border-bottom:1px solid #ddd;">`;
-      html += `<td style="padding:8px;">${formatDate(c.date)}</td>`;
-      html += `<td style="padding:8px;">${formatTime(c.time)}</td>`;
-      html += `<td style="padding:8px;"><ul style="margin:0;padding-left:20px;">${c.events.map(e => `<li>${e.name}${e.location ? ' @ ' + e.location : ''}</li>`).join('')}</ul></td>`;
-      html += `</tr>`;
-    }
-    html += `</table>`;
-  }
-
-  // === TODAY'S TODOS ===
-  if (data.todayTodos.length > 0) {
-    html += `<h2 style="color:#1a5f7a;border-bottom:2px solid #1a5f7a;">✅ Dnešní úkoly</h2>`;
-    html += `<ul>`;
-    for (const t of data.todayTodos) {
-      const cp = t.cps?.name ? ` (${t.cps.name})` : '';
-      html += `<li>${t.description}${cp}</li>`;
-    }
-    html += `</ul>`;
-  }
-
-  // === TOMORROW'S TODOS ===
-  if (data.tomorrowTodos.length > 0) {
-    html += `<h2 style="color:#1a5f7a;border-bottom:2px solid #1a5f7a;">📋 Zítřejší úkoly</h2>`;
-    html += `<ul>`;
-    for (const t of data.tomorrowTodos) {
-      const cp = t.cps?.name ? ` (${t.cps.name})` : '';
-      html += `<li>${t.description}${cp}</li>`;
-    }
-    html += `</ul>`;
-  }
-
-  // === COMMUNICATIONS BRIEF ===
-  const grouped = groupThreadsByTopic(data.threads);
-
-  if (grouped.length > 0) {
-    html += `<h2 style="color:#1a5f7a;border-bottom:2px solid #1a5f7a;">💬 Komunikace</h2>`;
-    for (const g of grouped) {
-      html += `<p style="margin-bottom:5px;"><strong>${g.cpName} - ${g.topic}:</strong></p>`;
-      html += `<ul style="margin-top:0;">`;
-      for (const s of g.summaries) {
-        html += `<li>${s}</li>`;
+  // 3. AGENDA (Events)
+  html += `<h3 style="border-bottom:2px solid #1a5f7a; color:#1a5f7a; margin-top:25px;">📅 Agenda Dnes</h3>`;
+  if (data.calendar?.length) {
+    for (const e of data.calendar) {
+      const loc = e.location || '';
+      const isVague = !loc || loc.length < 5 || loc.toLowerCase().includes('?');
+      
+      html += `<div style="margin-bottom:8px;">
+        <strong>${new Date(e.start.dateTime).toLocaleTimeString('cs-CZ', {hour:'2-digit',minute:'2-digit'})}</strong> ${e.summary}
+        <br><span style="color:#666; font-size:13px;">📍 ${loc || 'Bez místa'}</span>`;
+        
+      if (isVague) {
+        // Need CP ID for location update, simplified for MVP to use generic link if no CP linked
+        // In real app we'd look up the CP linked to event.
+        // For now, assume we can trigger a manual update
+        html += ` ${genLink('update_location', '0', '✏️ Upřesnit', '#D32F2F', {cp_id: 'UNKNOWN'})}`;
       }
-      html += `</ul>`;
+      html += `</div>`;
     }
+  } else {
+    html += `<p style="color:#777;">Žádné schůzky.</p>`;
   }
 
-  html += `<p style="margin-top:30px;">Hezký den,<br><strong>Váš Výkonný Asistent Special Agent 23</strong></p>`;
+  // 4. TODOS (Management)
+  html += `<h3 style="border-bottom:2px solid #1a5f7a; color:#1a5f7a; margin-top:25px;">✅ Úkoly</h3>`;
+  const pending = data.todos.filter(t => t.status !== 'completed');
+  if (pending.length) {
+    for (const t of pending) {
+      const isToday = t.due_date === new Date().toISOString().split('T')[0];
+      const color = isToday ? '#000' : '#777';
+      
+      html += `<div style="margin-bottom:10px; color:${color};">
+        • ${t.description} <span style="font-size:11px;">(${t.due_date})</span><br>
+        <div style="margin-left:15px; margin-top:2px;">
+          ${genLink('move_todo', t.id, '➡️ Zítra', '#555', {val:'tomorrow'})}
+          ${genLink('move_todo', t.id, '➡️ Později', '#555', {val:'later'})}
+          ${genLink('dismiss_todo', t.id, '🗑️ Hotovo', '#777')}
+        </div>
+      </div>`;
+    }
+  } else {
+    html += `<p style="color:#777;">Hotovo.</p>`;
+  }
 
+  html += `</div>`;
   return html;
 }
 
-async function sendEmailToSelf(gmail, email, subject, bodyHtml) {
-  const utf8Subject = Buffer.from(subject).toString('base64');
-  const encodedSubject = `=?UTF-8?B?${utf8Subject}?=`;
-
-  const fullHtml = `<div style="font-family: Arial, sans-serif; font-size: 16px; line-height: 1.6; color: #333;">${bodyHtml}</div>`;
-
-  const messageParts = [
-    'Content-Type: text/html; charset=utf-8',
-    'MIME-Version: 1.0',
-    'To: ' + email,
-    `Subject: ${encodedSubject}`,
-    'Importance: High',
-    'X-Priority: 1',
-    '',
-    fullHtml
-  ].join('\n');
-
-  const encodedMessage = Buffer.from(messageParts)
-    .toString('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
-
-  await gmail.users.messages.send({
-    userId: 'me',
-    requestBody: {
-      raw: encodedMessage,
-      labelIds: ["STARRED", "IMPORTANT", "INBOX"]
-    }
-  });
-}
-
+// --- HANDLER ---
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
   try {
-    const { data: clients, error } = await supabase.from('users').select('*');
-    if (error) throw error;
-
+    const { data: clients } = await supabase.from('users').select('*');
     for (const client of clients) {
       if (!client.google_oauth_tokens) continue;
-
-      try {
-        const tokens = typeof client.google_oauth_tokens === 'string'
-          ? JSON.parse(client.google_oauth_tokens)
-          : client.google_oauth_tokens;
-
-        const oauth2Client = getOAuth2Client();
-        oauth2Client.setCredentials(tokens);
-
-        const dbData = await getDailyData(client.id, oauth2Client);
-        const briefBody = generateBriefHtml(dbData, client.settings?.name || 'Client');
-        const subject = 'Denní Přehled od vašeho Special Agent 23';
-
-        const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-        await sendEmailToSelf(gmail, client.email, subject, briefBody);
-        console.log(`✓ Sent to ${client.email}`);
-      } catch (err) {
-        console.error(`Error for ${client.email}:`, err.message);
-      }
+      
+      const oauth2Client = getOAuth2Client();
+      oauth2Client.setCredentials(client.google_oauth_tokens);
+      
+      const dbData = await getDailyData(client.id, oauth2Client);
+      const html = generateHtml(dbData, client.settings?.name || 'Agent');
+      
+      const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+      
+      // Send Email
+      const subject = `⚡ Brief: ${new Date().toLocaleDateString('cs-CZ')}`;
+      const utf8Subject = `=?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`;
+      const body = [
+        'Content-Type: text/html; charset=utf-8',
+        'MIME-Version: 1.0',
+        `To: ${client.email}`,
+        `Subject: ${utf8Subject}`,
+        '',
+        html
+      ].join('\n');
+      
+      await gmail.users.messages.send({
+        userId: 'me',
+        requestBody: { raw: Buffer.from(body).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') }
+      });
     }
-
     res.status(200).json({ status: 'OK' });
-
-  } catch (fatalErr) {
-    console.error('Fatal Error:', fatalErr.message);
-    res.status(500).json({ error: fatalErr.message });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 }

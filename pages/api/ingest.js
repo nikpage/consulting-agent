@@ -13,7 +13,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    // ALWAYS USE THE SINGLE USER IN THE SYSTEM
     const { data: users, error: userErr } = await supabase
       .from('users')
       .select('id, google_oauth_tokens, email')
@@ -26,12 +25,10 @@ export default async function handler(req, res) {
     const user = users[0];
     const userId = user.id;
 
-    // OAUTH SETUP
     const oauth2Client = getOAuth2Client();
     oauth2Client.setCredentials(user.google_oauth_tokens);
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
-    // GET NEWEST MESSAGE
     const listRes = await gmail.users.messages.list({
       userId: 'me',
       maxResults: 1,
@@ -44,16 +41,13 @@ export default async function handler(req, res) {
 
     const messageId = listRes.data.messages[0].id;
 
-    // FETCH EMAIL DATA
     const emailData = await getEmailDetails(gmail, messageId);
     if (!emailData) {
       return res.status(404).json({ error: 'Email data not found' });
     }
 
-    // RESOLVE CP
     const cpId = await resolveCp(supabase, userId, emailData.from);
 
-    // CLASSIFICATION
     const { data: previousThread } = await supabase
       .from('conversation_threads')
       .select('summary_text')
@@ -68,10 +62,8 @@ export default async function handler(req, res) {
       contextSummary
     );
 
-    // STORE MESSAGE
     await storeMessage(supabase, userId, cpId, emailData);
 
-    // THREADING
     const threadId = await findOrCreateThread(
       supabase,
       userId,
@@ -83,13 +75,14 @@ export default async function handler(req, res) {
 
     if (threadId) {
       await updateThreadSummary(supabase, threadId);
-      await handleAction(supabase, userId, cpId, classification, emailData);
+      await handleAction(supabase, userId, cpId, threadId, classification, emailData);
     }
 
     return res.status(200).json({
       success: true,
       threadId,
-      action: classification.secondary
+      action: classification.secondary,
+      deal_type: classification.deal_type
     });
 
   } catch (err) {
