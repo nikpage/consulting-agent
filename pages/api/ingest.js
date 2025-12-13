@@ -24,6 +24,7 @@ export default async function handler(req, res) {
 
     const user = users[0];
     const userId = user.id;
+    const userEmail = user.email?.toLowerCase();
 
     const oauth2Client = getOAuth2Client();
     oauth2Client.setCredentials(user.google_oauth_tokens);
@@ -44,6 +45,12 @@ export default async function handler(req, res) {
     const emailData = await getEmailDetails(gmail, messageId);
     if (!emailData) {
       return res.status(404).json({ error: 'Email data not found' });
+    }
+
+    // Skip user's own emails
+    const senderEmail = emailData.from.match(/<(.+?)>/)?.[1]?.toLowerCase() || emailData.from.toLowerCase();
+    if (userEmail && senderEmail.includes(userEmail)) {
+      return res.status(200).json({ status: 'skipped own email' });
     }
 
     const cpId = await resolveCp(supabase, userId, emailData.from);
@@ -73,7 +80,9 @@ export default async function handler(req, res) {
       classification
     );
 
+    // Link message to thread
     if (threadId) {
+      await supabase.from('messages').update({ thread_id: threadId }).eq('id', emailData.id);
       await updateThreadSummary(supabase, threadId);
       await handleAction(supabase, userId, cpId, threadId, classification, emailData);
     }

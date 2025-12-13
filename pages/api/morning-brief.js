@@ -1,172 +1,242 @@
-import { Buffer } from 'buffer';
 import { createClient } from '@supabase/supabase-js';
 import { google } from 'googleapis';
-import { getOAuth2Client } from '../../lib/google-auth';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { signParams } from '../../lib/security';
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY);
-const BASE_URL = process.env.NEXTAUTH_URL || 'http://localhost:3000';
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const BASE_URL = process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
 
-// --- HELPERS ---
-function genLink(action, id, label, color, extra = {}) {
+function makeLink(action, id, label, extra = {}) {
   const params = { action, id, t: Date.now().toString(), ...extra };
   const sig = signParams(params);
   const query = new URLSearchParams({ ...params, sig }).toString();
-  return `<a href="${BASE_URL}/api/cmd?${query}" style="color:${color};text-decoration:none;font-size:12px;border:1px solid ${color};padding:2px 6px;border-radius:4px;margin-right:5px;">${label}</a>`;
+  return `<a href="${BASE_URL}/api/cmd?${query}" style="color:#1565C0;text-decoration:none;font-size:12px;border:1px solid #1565C0;padding:3px 8px;border-radius:4px;margin-right:5px;">${label}</a>`;
 }
 
-async function getDailyData(userId, oauth2Client) {
+async function getDailyData(userId, userEmail) {
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const todayEnd = new Date();
+  todayEnd.setHours(23, 59, 59, 999);
+  const fiveDaysAgo = new Date();
+  fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
+
+  // Todos
+  const { data: todos } = await supabase
+    .from('todos')
+    .select('*, cps(name, primary_identifier)')
+    .eq('user_id', userId)
+    .in('status', ['pending', 'in_progress'])
+    .order('due_date');
+
+  // Events needing confirmation
+  const { data: pendingEvents } = await supabase
+    .from('events')
+    .select('*, cps(name)')
+    .eq('user_id', userId)
+    .eq('status', 'suggested');
+
+  // Today's confirmed events
+  const { data: todayEvents } = await supabase
+    .from('events')
+    .select('*')
+    .eq('user_id', userId)
+    .gte('start_time', todayStart.toISOString())
+    .lte('start_time', todayEnd.toISOString())
+    .in('status', ['confirmed', 'scheduled']);
+
+  // Active threads with CPs
+  const { data: threads } = await supabase
+    .from('conversation_threads')
+    .select('*, thread_participants(cps(id, name, primary_identifier))')
+    .eq('user_id', userId)
+    .neq('state', 'idle')
+    .order('last_updated', { ascending: false })
+    .limit(15);
+
+  // Filter out user's own email from threads
+  const userEmailLower = userEmail?.toLowerCase() || '';
+  const filteredThreads = (threads || []).filter(t => {
+    const cp = t.thread_participants?.[0]?.cps;
+    const cpEmail = cp?.primary_identifier?.toLowerCase() || '';
+    return !cpEmail.includes(userEmailLower) && !userEmailLower.includes(cpEmail.split('@')[0]);
+  });
+
+  // Mark cold ones
   const now = new Date();
-  const today = now.toISOString().split('T')[0];
-  const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1);
-  const tomorrowStr = tomorrow.toISOString().split('T')[0];
+  for (const t of filteredThreads) {
+    t.daysSinceUpdate = Math.floor((now - new Date(t.last_updated)) / (1000*60*60*24));
+    t.isCold = t.daysSinceUpdate >= 5;
+  }
 
-  // Fetch Data
-  const { data: todos } = await supabase.from('todos').select('*, cps(name)').eq('user_id', userId).in('status', ['pending']).order('due_date');
-  const { data: threads } = await supabase.from('conversation_threads').select('*, thread_participants(cp_id)').eq('user_id', userId).order('priority_score', { ascending: false });
-  const { data: suggested } = await supabase.from('events').select('*').eq('user_id', userId).eq('status', 'suggested');
-  
-  // Calendar
-  const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-  const eventsRes = await calendar.events.list({ calendarId: 'primary', timeMin: now.toISOString(), timeMax: new Date(now.getTime() + 86400000).toISOString(), singleEvents: true, orderBy: 'startTime' });
-
-  return { todos, threads, suggested, calendar: eventsRes.data.items || [] };
+  return {
+    todos: todos || [],
+    pendingEvents: pendingEvents || [],
+    todayEvents: todayEvents || [],
+    threads: filteredThreads
+  };
 }
 
-// --- GENERATOR ---
-function generateHtml(data, clientName) {
-  let html = `<div style="font-family:Arial,sans-serif; max-width:600px; margin:0 auto;">`;
-  html += `<h2 style="color:#333;">Dobrý den, ${clientName}</h2>`;
+function generateBriefHtml(data, clientName) {
+  let html = `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;max-width:600px;margin:0 auto;color:#333;">`;
+  html += `<h2 style="color:#1a5f7a;margin-bottom:20px;">Dobrý den, ${clientName}</h2>`;
 
-  // 1. SUGGESTED EVENTS (Confirmation Required)
-  if (data.suggested?.length) {
-    html += `<div style="background:#FFF3E0; padding:10px; border-radius:5px; margin-bottom:20px;">
-      <h3 style="margin:0 0 10px; color:#E65100;">⚡ Potvrdit Schůzky</h3>`;
-    for (const e of data.suggested) {
-      html += `<div style="margin-bottom:10px; padding-bottom:5px; border-bottom:1px dashed #ccc;">
-        <strong>${new Date(e.start_time).toLocaleTimeString('cs-CZ', {hour:'2-digit',minute:'2-digit'})}</strong> ${e.title}<br>
-        ${genLink('confirm_event', e.id, '✅ ANO', 'green')} 
-        ${genLink('reject_event', e.id, '❌ NE', 'red')}
-      </div>`;
+  // Pending events to confirm
+  if (data.pendingEvents.length > 0) {
+    html += `<div style="background:#FFF3E0;padding:12px;border-radius:6px;margin-bottom:20px;">`;
+    html += `<strong style="color:#E65100;">⚡ K potvrzení:</strong><br>`;
+    for (const e of data.pendingEvents) {
+      const time = new Date(e.start_time).toLocaleTimeString('cs-CZ', {hour:'2-digit', minute:'2-digit'});
+      const date = new Date(e.start_time).toLocaleDateString('cs-CZ', {day:'numeric', month:'numeric'});
+      html += `<div style="margin:8px 0;">`;
+      html += `<strong>${date} ${time}</strong> - ${e.title}`;
+      if (e.cps?.name) html += ` (${e.cps.name})`;
+      html += `<br>${makeLink('confirm_event', e.id, '✓ Potvrdit')} ${makeLink('reject_event', e.id, '✗ Zrušit')}`;
+      html += `</div>`;
     }
     html += `</div>`;
   }
 
-  // 2. DEAL PULSE (Threads)
-  html += `<h3 style="border-bottom:2px solid #1a5f7a; color:#1a5f7a;">💬 Aktivita Obchodů</h3>`;
-  for (const t of data.threads) {
-    if (t.priority_score < 2 && t.state === 'idle') continue; // Skip low priority
-
-    // Tags
-    const dealColor = t.deal_type === 'seller' ? '#F57C00' : '#388E3C'; // Orange vs Green
-    const dealLabel = t.deal_type === 'seller' ? 'PRODEJCE' : 'KUPUJÍCÍ';
-    
-    let stateColor = '#9E9E9E';
-    let stateLabel = 'LEAD';
-    if (t.state === 'negotiating') { stateColor = '#7B1FA2'; stateLabel = 'JEDNÁNÍ'; }
-    if (t.state === 'closing') { stateColor = '#D32F2F'; stateLabel = 'UZAVÍRÁNÍ'; }
-
-    const cpId = t.thread_participants?.[0]?.cp_id;
-
-    html += `<div style="margin-bottom:15px;">
-      <span style="background:${dealColor};color:fff;padding:2px 5px;font-size:10px;font-weight:bold;border-radius:3px;">${dealLabel}</span>
-      <span style="background:${stateColor};color:fff;padding:2px 5px;font-size:10px;font-weight:bold;border-radius:3px;">${stateLabel}</span>
-      <strong> ${t.topic}</strong>
-      <p style="margin:5px 0; color:#555; font-size:14px;">${t.summary_text}</p>
-      
-      <div style="margin-top:5px;">
-        <span style="font-size:11px;color:#777;margin-right:5px;">Vytvořit úkol:</span>
-        ${genLink('create_todo', t.id, 'Dnes', '#1565C0', {val:'today', cp_id: cpId})}
-        ${genLink('create_todo', t.id, 'Zítra', '#1565C0', {val:'tomorrow', cp_id: cpId})}
-        ${genLink('create_todo', t.id, 'Později (5 dní)', '#1565C0', {val:'later', cp_id: cpId})}
-      </div>
-    </div>`;
-  }
-
-  // 3. AGENDA (Events)
-  html += `<h3 style="border-bottom:2px solid #1a5f7a; color:#1a5f7a; margin-top:25px;">📅 Agenda Dnes</h3>`;
-  if (data.calendar?.length) {
-    for (const e of data.calendar) {
-      const loc = e.location || '';
-      const isVague = !loc || loc.length < 5 || loc.toLowerCase().includes('?');
-      
-      html += `<div style="margin-bottom:8px;">
-        <strong>${new Date(e.start.dateTime).toLocaleTimeString('cs-CZ', {hour:'2-digit',minute:'2-digit'})}</strong> ${e.summary}
-        <br><span style="color:#666; font-size:13px;">📍 ${loc || 'Bez místa'}</span>`;
-        
-      if (isVague) {
-        // Need CP ID for location update, simplified for MVP to use generic link if no CP linked
-        // In real app we'd look up the CP linked to event.
-        // For now, assume we can trigger a manual update
-        html += ` ${genLink('update_location', '0', '✏️ Upřesnit', '#D32F2F', {cp_id: 'UNKNOWN'})}`;
-      }
+  // Today's schedule
+  html += `<div style="margin-bottom:20px;">`;
+  html += `<strong style="color:#1a5f7a;">📅 Dnes:</strong><br>`;
+  if (data.todayEvents.length > 0) {
+    for (const e of data.todayEvents) {
+      const time = new Date(e.start_time).toLocaleTimeString('cs-CZ', {hour:'2-digit', minute:'2-digit'});
+      html += `<div style="margin:6px 0;"><strong>${time}</strong> - ${e.title}`;
+      if (e.location) html += ` <span style="color:#666;">(${e.location})</span>`;
       html += `</div>`;
     }
   } else {
-    html += `<p style="color:#777;">Žádné schůzky.</p>`;
+    html += `<div style="color:#777;">Žádné schůzky</div>`;
   }
-
-  // 4. TODOS (Management)
-  html += `<h3 style="border-bottom:2px solid #1a5f7a; color:#1a5f7a; margin-top:25px;">✅ Úkoly</h3>`;
-  const pending = data.todos.filter(t => t.status !== 'completed');
-  if (pending.length) {
-    for (const t of pending) {
-      const isToday = t.due_date === new Date().toISOString().split('T')[0];
-      const color = isToday ? '#000' : '#777';
-      
-      html += `<div style="margin-bottom:10px; color:${color};">
-        • ${t.description} <span style="font-size:11px;">(${t.due_date})</span><br>
-        <div style="margin-left:15px; margin-top:2px;">
-          ${genLink('move_todo', t.id, '➡️ Zítra', '#555', {val:'tomorrow'})}
-          ${genLink('move_todo', t.id, '➡️ Později', '#555', {val:'later'})}
-          ${genLink('dismiss_todo', t.id, '🗑️ Hotovo', '#777')}
-        </div>
-      </div>`;
-    }
-  } else {
-    html += `<p style="color:#777;">Hotovo.</p>`;
-  }
-
   html += `</div>`;
+
+  // Active deals
+  const activeThreads = data.threads.filter(t => !t.isCold);
+  if (activeThreads.length > 0) {
+    html += `<div style="margin-bottom:20px;">`;
+    html += `<strong style="color:#1a5f7a;">💼 Aktivní:</strong>`;
+    for (const t of activeThreads) {
+      const cp = t.thread_participants?.[0]?.cps;
+      const name = cp?.name || cp?.primary_identifier?.split('@')[0] || 'Neznámý';
+      html += `<div style="margin:8px 0;padding:10px;background:#f5f5f5;border-radius:4px;">`;
+      html += `<strong>${name}</strong>`;
+      if (t.summary_text) {
+        html += `<br><span style="color:#555;">${t.summary_text}</span>`;
+      }
+      html += `</div>`;
+    }
+    html += `</div>`;
+  }
+
+  // Cold contacts
+  const coldThreads = data.threads.filter(t => t.isCold);
+  if (coldThreads.length > 0) {
+    html += `<div style="margin-bottom:20px;">`;
+    html += `<strong style="color:#D32F2F;">🥶 Chladnou:</strong>`;
+    for (const t of coldThreads) {
+      const cp = t.thread_participants?.[0]?.cps;
+      const name = cp?.name || cp?.primary_identifier?.split('@')[0] || 'Neznámý';
+      html += `<div style="margin:6px 0;padding:8px;background:#ffebee;border-radius:4px;">`;
+      html += `<strong>${name}</strong> <span style="color:#666;">(${t.daysSinceUpdate} dní)</span>`;
+      html += `</div>`;
+    }
+    html += `</div>`;
+  }
+
+  // Todos
+  const pendingTodos = data.todos.filter(t => t.status !== 'completed');
+  if (pendingTodos.length > 0) {
+    html += `<div style="margin-bottom:20px;">`;
+    html += `<strong style="color:#1a5f7a;">✅ Úkoly:</strong>`;
+    for (const t of pendingTodos) {
+      const cpName = t.cps?.name || '';
+      const isOverdue = t.due_date && new Date(t.due_date) < new Date();
+      html += `<div style="margin:8px 0;${isOverdue ? 'color:#c00;' : ''}">`;
+      html += `• ${t.description}`;
+      if (cpName) html += ` <span style="color:#666;">(${cpName})</span>`;
+      if (t.due_date) html += ` <span style="font-size:12px;color:#888;">[${t.due_date}]</span>`;
+      html += `<br><div style="margin-top:4px;">`;
+      html += `${makeLink('done_todo', t.id, 'Hotovo')} `;
+      html += `${makeLink('move_todo', t.id, 'Zítra', {val:'tomorrow'})} `;
+      html += `${makeLink('move_todo', t.id, 'Později', {val:'later'})}`;
+      html += `</div></div>`;
+    }
+    html += `</div>`;
+  }
+
+  html += `<div style="margin-top:30px;padding-top:15px;border-top:1px solid #ddd;color:#666;font-size:13px;">`;
+  html += `S pozdravem,<br>Váš asistent`;
+  html += `</div></div>`;
+
   return html;
 }
 
-// --- HANDLER ---
+async function sendEmail(gmail, email, subject, bodyHtml) {
+  const utf8Subject = Buffer.from(subject).toString('base64');
+  const encodedSubject = `=?UTF-8?B?${utf8Subject}?=`;
+
+  const messageParts = [
+    'Content-Type: text/html; charset=utf-8',
+    'MIME-Version: 1.0',
+    'To: ' + email,
+    `Subject: ${encodedSubject}`,
+    '',
+    bodyHtml
+  ].join('\n');
+
+  const encodedMessage = Buffer.from(messageParts)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  await gmail.users.messages.send({
+    userId: 'me',
+    requestBody: { raw: encodedMessage }
+  });
+}
+
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
   try {
     const { data: clients } = await supabase.from('users').select('*');
+
     for (const client of clients) {
       if (!client.google_oauth_tokens) continue;
-      
-      const oauth2Client = getOAuth2Client();
-      oauth2Client.setCredentials(client.google_oauth_tokens);
-      
-      const dbData = await getDailyData(client.id, oauth2Client);
-      const html = generateHtml(dbData, client.settings?.name || 'Agent');
-      
-      const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-      
-      // Send Email
-      const subject = `⚡ Brief: ${new Date().toLocaleDateString('cs-CZ')}`;
-      const utf8Subject = `=?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`;
-      const body = [
-        'Content-Type: text/html; charset=utf-8',
-        'MIME-Version: 1.0',
-        `To: ${client.email}`,
-        `Subject: ${utf8Subject}`,
-        '',
-        html
-      ].join('\n');
-      
-      await gmail.users.messages.send({
-        userId: 'me',
-        requestBody: { raw: Buffer.from(body).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') }
-      });
+
+      try {
+        const tokens = typeof client.google_oauth_tokens === 'string'
+          ? JSON.parse(client.google_oauth_tokens)
+          : client.google_oauth_tokens;
+
+        const oauth2Client = new google.auth.OAuth2(
+          process.env.GOOGLE_CLIENT_ID,
+          process.env.GOOGLE_CLIENT_SECRET,
+          process.env.GOOGLE_REDIRECT_URI
+        );
+        oauth2Client.setCredentials(tokens);
+        const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+        const dbData = await getDailyData(client.id, client.email);
+        const html = generateBriefHtml(dbData, client.settings?.name || 'Agent');
+        const subject = `⚡ Brief: ${new Date().toLocaleDateString('cs-CZ')}`;
+
+        await sendEmail(gmail, client.email, subject, html);
+        console.log(`✓ Sent to ${client.email}`);
+      } catch (err) {
+        console.error(`Error for ${client.email}:`, err.message);
+      }
     }
+
     res.status(200).json({ status: 'OK' });
   } catch (err) {
-    console.error(err);
+    console.error('Fatal:', err.message);
     res.status(500).json({ error: err.message });
   }
 }

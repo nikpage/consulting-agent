@@ -31,7 +31,7 @@ Tel: 602 123 456`,
     subject: 'Dotaz na cenu bytu - Žižkov',
     body: `Dobrý den,
 
-stále čekám na tu cenovou nabídku pro můj byt na Žižkově, o které jsme mluvili minulý týden. 
+stále čekám na tu cenovou nabídku pro můj byt na Žižkově, o které jsme mluvili minulý týden.
 
 Potřebuji to vědět do pátku, protože mám ještě nabídku od jiné realitky.
 
@@ -101,9 +101,9 @@ Král Reality`,
 
 async function sendTestEmail(gmail, fromAlias, fromName, toEmail, subject, body) {
   // Create "From" header with alias
-  const fromEmail = `pod.one+${fromAlias}@gmail.com`;
+  const fromEmail = `ainikpage+${fromAlias}@gmail.com`;
   const fromHeader = `${fromName} <${fromEmail}>`;
-  
+
   const utf8Subject = Buffer.from(subject).toString('base64');
   const encodedSubject = `=?UTF-8?B?${utf8Subject}?=`;
 
