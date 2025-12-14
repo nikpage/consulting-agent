@@ -1,38 +1,52 @@
+import { createClient } from '@supabase/supabase-js';
 import { google } from 'googleapis';
-import { supabase } from '../../lib/supabase';
 import { getEmailDetails, storeMessage } from '../../lib/ingestion';
 import { resolveCp } from '../../lib/cp';
 import { processMessagePipeline } from '../../lib/classification';
-import { findOrCreateThread, updateThreadSummary } from '../../lib/threading';
 import { handleAction } from '../../lib/scheduling';
-import { getOAuth2Client } from '../../lib/google-auth';
+import { setCredentials } from '../../lib/google-auth';
+import { generateEmbedding, storeEmbedding } from '../../lib/embeddings';
+import { findOrCreateThread, updateThreadSummary } from '../../lib/threading';
+import { renewIfExpiring } from '../../lib/calendar-setup';
+import { processAdminCommands } from '../../lib/commands';
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY
+);
+
+const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function withRetry(operation, retries = 3, delay = 60000) {
+    for (let i = 0; i < retries; i++) {
+        try {
+            return await operation();
+        } catch (err) {
+            const isOverload = err.message.includes('503') || err.message.includes('429');
+            if (i === retries - 1 || !isOverload) throw err;
+            console.log(`   ⚠️ System Busy (503/429). Retrying in ${delay/1000}s...`);
+            await wait(delay);
+        }
+    }
+}
+
+async function getCurrentSummary(cpId) {
+    const { data } = await supabase.from('cp_states').select('summary_text').eq('cp_id', cpId).maybeSingle();
+    return data ? data.summary_text : null;
+}
 
 export default async function handler(req, res) {
-  // 1. Validate Request Method
-  if (req.method !== 'POST') {
+  if (req.method !== 'POST' && req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // 2. Validate Input Parameters
-  const { userId, messageId } = req.body;
-
-  if (!userId || !messageId) {
-    return res.status(400).json({ error: 'Missing userId or messageId in request body' });
-  }
+  const stats = { users: 0, messages: 0, skipped: 0, inactive: 0, errors: 0 };
 
   try {
-    // 3. Setup Google OAuth Client
-    const { data: user, error: userError } = await supabase
-      .from('users')
-      .select('google_oauth_tokens, email')
-      .eq('id', userId)
-      .single();
+    const { data: clients, error } = await supabase.from('users').select('*').not('google_oauth_tokens', 'is', null);
+    if (error) throw error;
+    stats.users = clients.length;
 
-<<<<<<< Updated upstream
-    if (userError || !user || !user.google_oauth_tokens) {
-      console.error('[INGEST] User auth missing', userError);
-      return res.status(401).json({ error: 'User not authenticated' });
-=======
     for (const client of clients) {
       console.log(`\n--- Processing Client: ${client.email} ---`);
       try {
@@ -51,7 +65,7 @@ export default async function handler(req, res) {
             if (!emailData.cleanedText) continue;
 
             const subj = emailData.subject || '';
-            if (subj.includes('Denní Přehled') || subj.includes('Daily Brief') || subj.includes('')) {
+            if (subj.includes('Denní Přehled') || subj.includes('Daily Brief') || subj.includes('Special Agent 23')) {
                     stats.skipped++;
                     continue;
             }
@@ -68,7 +82,6 @@ export default async function handler(req, res) {
             const currentSummary = await getCurrentSummary(cpId);
             const commandOverrides = await processAdminCommands(emailData.cleanedText);
 
-            // 2. PROCESS COMMANDS (This runs "Save:..." and returns overrides like "Buffer:...")
             if (commandOverrides.travelOverride) {
                 console.log(`   🛠️ Command Detected: Overriding travel buffer to ${commandOverrides.travelOverride}m`);
             }
@@ -76,7 +89,6 @@ export default async function handler(req, res) {
             const pipelineResult = await withRetry(() => processMessagePipeline(emailData.cleanedText, currentSummary));
             if (commandOverrides.travelOverride) pipelineResult.travelOverride = commandOverrides.travelOverride;
 
-            // 3. INJECT OVERRIDES INTO PIPELINE RESULT
             if (commandOverrides.travelOverride) {
                 pipelineResult.travelOverride = commandOverrides.travelOverride;
             }
@@ -119,65 +131,9 @@ export default async function handler(req, res) {
         console.error(`Client Error ${client.email}:`, clientErr.message);
         stats.errors++;
       }
->>>>>>> Stashed changes
     }
-
-    const oauth2Client = getOAuth2Client();
-    oauth2Client.setCredentials(user.google_oauth_tokens);
-    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-
-    // 4. Fetch & Parse Email
-    // (Throws "Unauthorized" if PIN is enabled and missing/invalid)
-    const emailData = await getEmailDetails(gmail, messageId);
-
-    if (!emailData) {
-      return res.status(404).json({ error: 'Email data not found' });
-    }
-
-    // 5. Resolve Contact Person (CP)
-    // (Handles "Spoofed" sender from Forwarding logic)
-    const cpId = await resolveCp(supabase, userId, emailData.from);
-
-    // 6. Run AI Classification Pipeline
-    // Retrieve context from the most recent thread for this user
-    const { data: previousThread } = await supabase
-        .from('conversation_threads')
-        .select('summary_text')
-        .eq('user_id', userId)
-        .order('last_updated', { ascending: false })
-        .limit(1)
-        .single();
-
-    const contextSummary = previousThread?.summary_text || '';
-    const classification = await processMessagePipeline(emailData.cleanedText, contextSummary);
-
-    // 7. Store Message in DB
-    await storeMessage(supabase, userId, cpId, emailData);
-
-    // 8. Manage Threading (Find or Create)
-    const threadId = await findOrCreateThread(supabase, userId, cpId, emailData.cleanedText, emailData.id, classification);
-
-    if (threadId) {
-      // 9. Update Thread Summary (Runs immediately for every message)
-      await updateThreadSummary(supabase, threadId);
-
-      // 10. Handle Actions (Scheduling, Todos, Maps Lookup)
-      await handleAction(supabase, userId, cpId, classification, emailData);
-    }
-
-    return res.status(200).json({
-      success: true,
-      threadId,
-      action: classification.secondary
-    });
-
-  } catch (err) {
-    console.error('[INGEST] Error:', err.message);
-
-    if (err.message.includes('Unauthorized') || err.message.includes('PIN')) {
-        return res.status(403).json({ error: 'Security PIN Validation Failed' });
-    }
-
-    return res.status(500).json({ error: err.message });
+    res.status(200).json({ status: 'OK', stats });
+  } catch (fatalErr) {
+    res.status(500).json({ error: fatalErr.message });
   }
 }

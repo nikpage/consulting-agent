@@ -12,17 +12,14 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // Google sends headers for webhook notifications
   const channelId = req.headers['x-goog-channel-id'];
   const resourceState = req.headers['x-goog-resource-state'];
 
-  // Sync notification - just acknowledge
   if (resourceState === 'sync') {
     return res.status(200).json({ status: 'sync acknowledged' });
   }
 
   try {
-    // Get user from channel ID (we store this when setting up webhook)
     const { data: user } = await supabase
       .from('users')
       .select('*')
@@ -37,7 +34,6 @@ export default async function handler(req, res) {
     oauth2Client.setCredentials(user.google_oauth_tokens);
     const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
 
-    // Get recently updated events
     const now = new Date();
     const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000);
 
@@ -48,14 +44,12 @@ export default async function handler(req, res) {
     });
 
     for (const event of events.items || []) {
-      // Check if this is one of our suggested events that got confirmed
       const cpEmail = event.extendedProperties?.private?.cpEmail;
       const eventStatus = event.extendedProperties?.private?.status;
 
       if (eventStatus === 'suggested' && event.status === 'confirmed') {
         console.log(`[WEBHOOK] Event confirmed: ${event.summary}`);
 
-        // Send invite to CP
         if (cpEmail) {
           await calendar.events.patch({
             calendarId: 'primary',
@@ -73,7 +67,6 @@ export default async function handler(req, res) {
           });
           console.log(`[WEBHOOK] Invite sent to ${cpEmail}`);
 
-          // Update our DB
           await supabase
             .from('events')
             .update({ status: 'scheduled' })
