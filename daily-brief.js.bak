@@ -49,7 +49,7 @@ async function getDailyData(userId) {
 
 // --- 2. Generate Content (HTML) ---
 async function generateBrief(data, clientName) {
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
   // FIXED: Removed brackets from list items
   const todoList = data.todos.map(t => `<li><strong>ÚKOL:</strong> ${t.description} (Termín: ${t.due_date})</li>`).join('');

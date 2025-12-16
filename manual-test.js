@@ -76,7 +76,7 @@ async function runDirectTest() {
 
     // 4. RUN AI LOGIC
     console.log(`\n🧠 EXTRACTION IN PROGRESS...`);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-pro' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     
     const prompt = `
       Role: Senior Executive Assistant.
