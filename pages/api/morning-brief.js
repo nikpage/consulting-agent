@@ -1,17 +1,14 @@
 import { createClient } from '@supabase/supabase-js';
 import { google } from 'googleapis';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { signParams } from '../../lib/security';
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY);
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
 
 function makeActionUrl(action, id, extra) {
   const params = { action: action, id: id, ts: Date.now().toString(), ...extra };
   params.sig = signParams(params);
   const query = Object.keys(params).map(k => k + '=' + encodeURIComponent(params[k])).join('&');
-  return BASE_URL + '/api/cmd?' + query;
+  return `${process.env.NEXTAUTH_URL}/api/cmd?${query}`;
 }
 
 async function getDailyData(userId) {
@@ -20,6 +17,7 @@ async function getDailyData(userId) {
   const todayEnd = new Date();
   todayEnd.setHours(23, 59, 59, 999);
 
+  // Todos (Pending or In Progress, Due today or earlier)
   const { data: todos } = await supabase
     .from('todos')
     .select('id, description, due_date, status, cps(name)')
@@ -27,6 +25,7 @@ async function getDailyData(userId) {
     .in('status', ['pending', 'in_progress'])
     .lte('due_date', todayEnd.toISOString().split('T')[0]);
 
+  // Events (Today)
   const { data: events } = await supabase
     .from('events')
     .select('id, title, start_time, end_time, location, status, cps(name)')
@@ -34,88 +33,83 @@ async function getDailyData(userId) {
     .gte('start_time', todayStart.toISOString())
     .lte('start_time', todayEnd.toISOString());
 
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  
-  const { data: threads } = await supabase
+  // HEADLINES (Priority >= 8)
+  const { data: headlines } = await supabase
     .from('conversation_threads')
-    .select('id, topic, summary_text')
+    .select('topic, summary_text, priority_score, cps(name)')
     .eq('user_id', userId)
     .eq('state', 'active')
-    .gt('last_updated', yesterday.toISOString());
+    .gte('priority_score', 8) 
+    .order('priority_score', { ascending: false })
+    .limit(3);
 
-  return { todos: todos || [], events: events || [], threads: threads || [] };
+  // ALL ACTIVE THREADS (For Aktivity)
+  const { data: threads } = await supabase
+    .from('conversation_threads')
+    .select('id, topic, summary_text, last_updated, cps(name)')
+    .eq('user_id', userId)
+    .eq('state', 'active')
+    .order('last_updated', { ascending: false });
+
+  return { todos, events, headlines, threads };
+}
+
+function formatHeadlines(headlines) {
+  if (!headlines || headlines.length === 0) return '<p><em>Žádné urgentní záležitosti (No Urgent Items).</em></p>';
+  return '<ul style="background-color: #ffebeb; padding: 15px; border-radius: 5px; border: 1px solid #ffcccc;">' + headlines.map(h => {
+    return `<li style="margin-bottom: 5px; font-size: 1.1em;"><strong>🔥 ${h.cps?.name || 'Unknown'}:</strong> ${h.summary_text}</li>`;
+  }).join('') + '</ul>';
 }
 
 function formatTodos(todos) {
-  if (!todos.length) return '<p>Žádné úkoly.</p>';
-  
+  if (!todos || todos.length === 0) return '<p>Žádné úkoly.</p>';
   return '<ul>' + todos.map(t => {
     const desc = t.description.replace(/^ÚKOL:\s*/i, '').replace(/^TODO:\s*/i, '');
     const completeUrl = makeActionUrl('complete_todo', t.id);
-    const snoozeUrl = makeActionUrl('snooze_todo', t.id);
-    
-    return '<li>' + desc + 
-      ' <a href="' + completeUrl + '" style="color:green;">[✓ Hotovo]</a>' +
-      ' <a href="' + snoozeUrl + '" style="color:orange;">[→ Zítra]</a>' +
-      '</li>';
+    return `<li>
+      <strong>${t.cps?.name || 'Obecné'}:</strong> ${desc}
+      <br>[<a href="${completeUrl}">Hotovo</a>]
+    </li>`;
   }).join('') + '</ul>';
 }
 
 function formatEvents(events) {
-  if (!events.length) return '<p>Žádné události.</p>';
-  
+  if (!events || events.length === 0) return '<p>Žádné události.</p>';
   return '<ul>' + events.map(e => {
     const time = new Date(e.start_time).toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' });
-    const acceptUrl = makeActionUrl('accept_event', e.id);
-    const rejectUrl = makeActionUrl('reject_event', e.id);
-    const rescheduleUrl = makeActionUrl('reschedule_event', e.id);
-    
-    let buttons = '';
-    if (e.status === 'suggested' || e.status === 'conflict') {
-      buttons = ' <a href="' + acceptUrl + '" style="color:green;">[✓ Potvrdit]</a>' +
-        ' <a href="' + rescheduleUrl + '" style="color:blue;">[⏰ Jiný čas]</a>' +
-        ' <a href="' + rejectUrl + '" style="color:red;">[✗ Zrušit]</a>';
-    }
-    
-    const conflict = e.status === 'conflict' ? ' <strong style="color:red;">[KONFLIKT]</strong>' : '';
-    
-    return '<li>' + e.title + ' - ' + time + ' @ ' + (e.location || 'TBD') + conflict + buttons + '</li>';
+    return `<li><strong>${time}</strong> - ${e.title} (${e.location || 'TBD'})</li>`;
   }).join('') + '</ul>';
 }
 
 function formatThreads(threads) {
-  if (!threads.length) return '<p>Žádné aktualizace.</p>';
-  
+  if (!threads || threads.length === 0) return '<p>Žádná aktivita.</p>';
   return '<ul>' + threads.map(t => {
-    const topic = t.topic.replace(/^Conversation with\s*/i, '').replace(/\s*\(active\)\s*$/i, '');
-    return '<li><strong>' + topic + '</strong>: ' + (t.summary_text || '').substring(0, 150) + '</li>';
+    // Strategic summary
+    return `<li style="margin-bottom: 12px; border-bottom: 1px solid #eee; padding-bottom: 8px;">
+      <div style="font-weight: bold; color: #333;">${t.cps?.name || 'Neznámý'}</div>
+      <div style="color: #000;">${t.summary_text || 'Bez shrnutí'}</div>
+    </li>`;
   }).join('') + '</ul>';
 }
 
 async function sendEmailToSelf(gmail, email, subject, bodyHtml) {
   const utf8Subject = Buffer.from(subject).toString('base64');
-  const encodedSubject = '=?UTF-8?B?' + utf8Subject + '?=';
-
-  const fullHtml = '<div style="font-family: Arial, sans-serif; font-size: 16px; line-height: 1.6; color: #333;">' +
-    bodyHtml +
-    '<br><br><div style="font-size: 14px; color: #555;">S pozdravem,<br>Váš Výkonný Asistent Special Agent 23</div></div>';
-  
   const messageParts = [
-    'Content-Type: text/html; charset=utf-8',
+    `From: <${email}>`,
+    `To: <${email}>`,
+    `Subject: =?utf-8?B?${utf8Subject}?=`,
     'MIME-Version: 1.0',
-    'To: ' + email,
-    'Subject: ' + encodedSubject,
+    'Content-Type: text/html; charset=utf-8',
     '',
-    fullHtml
+    bodyHtml
   ].join('\n');
-  
+
   const encodedMessage = Buffer.from(messageParts)
     .toString('base64')
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
-  
+
   await gmail.users.messages.send({
     userId: 'me',
     requestBody: { raw: encodedMessage }
@@ -126,30 +120,50 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
-  
+
   try {
     const { data: clients } = await supabase.from('users').select('*');
+    if (!clients) return res.status(200).json({ status: 'No clients' });
 
     for (const client of clients) {
       if (!client.google_oauth_tokens) continue;
-
+      
       try {
+        console.log(`Preparing Brief for ${client.email}...`);
+        
+        // 1. Get Data
         const data = await getDailyData(client.id);
         
-        const name = client.settings?.name || 'Client';
+        // 2. Format HTML
         const todayStr = new Date().toLocaleDateString('cs-CZ', { weekday: 'long', day: 'numeric', month: 'long' });
         
-        const bodyHtml = '<p>Dobrý den ' + name + ',</p>' +
-          '<p>Zde je Váš přehled na ' + todayStr + ':</p>' +
-          '<h3>Události</h3>' + formatEvents(data.events) +
-          '<h3>Úkoly</h3>' + formatTodos(data.todos) +
-          '<h3>Aktivity</h3>' + formatThreads(data.threads) +
-          '<p>Přeji produktivní den!</p>';
+        const bodyHtml = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h1 style="color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px;">☀️ Ranní Přehled: ${todayStr}</h1>
+            
+            <h2 style="color: #e74c3c; margin-top: 30px;">🚨 Hlavní zprávy (Headlines)</h2>
+            ${formatHeadlines(data.headlines)}
+            
+            <h2 style="color: #2980b9; margin-top: 30px;">📅 Dnešní Kalendář</h2>
+            ${formatEvents(data.events)}
+            
+            <h2 style="color: #27ae60; margin-top: 30px;">✅ Úkoly (To-Do)</h2>
+            ${formatTodos(data.todos)}
+            
+            <h2 style="color: #8e44ad; margin-top: 30px;">💬 Přehled Aktivit</h2>
+            ${formatThreads(data.threads)}
+            
+            <div style="margin-top: 50px; font-size: 0.8em; color: #999; text-align: center;">
+              Vygenerováno AI Asistentem
+            </div>
+          </div>
+        `;
 
+        // 3. Send Email
         const tokens = typeof client.google_oauth_tokens === 'string' 
           ? JSON.parse(client.google_oauth_tokens) 
           : client.google_oauth_tokens;
-          
+        
         const oauth2Client = new google.auth.OAuth2(
           process.env.GOOGLE_CLIENT_ID,
           process.env.GOOGLE_CLIENT_SECRET,
@@ -157,17 +171,18 @@ export default async function handler(req, res) {
         );
         oauth2Client.setCredentials(tokens);
         const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-
+        
         await sendEmailToSelf(gmail, client.email, 'Denní Přehled - ' + todayStr, bodyHtml);
         console.log('✓ Sent to ' + client.email);
+        
       } catch (err) {
         console.error('Error for ' + client.email + ':', err.message);
       }
     }
-    
+
     res.status(200).json({ status: 'OK' });
-    
   } catch (fatalErr) {
+    console.error('Fatal Brief Error:', fatalErr);
     res.status(500).json({ error: fatalErr.message });
   }
 }
