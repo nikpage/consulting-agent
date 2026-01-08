@@ -35,7 +35,7 @@ export async function runAgentForClient(clientId: string): Promise<{
     await renewIfExpiring(ctx.supabase, ctx.client.id, tokens, ctx.client.settings || {});
 
     // List messages (exact logic from ingest.js)
-    const resList = await retry<gmail_v1.Schema$ListMessagesResponse>(() =>
+    const resList = await retry<any>(() =>
       ctx.gmail.users.messages.list({
         userId: 'me',
         labelIds: ['INBOX'],
