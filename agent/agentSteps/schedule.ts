@@ -66,7 +66,9 @@ export async function scheduleAction(
   let actionStatus = 'pending';
   let draftReply = '';
 
-  if (conflictCheck.data.items.length === 0) {
+  const conflictItems = (conflictCheck as { items?: any[] }).items ?? [];
+if (conflictItems.length === 0) {
+
     // FREE -> Suggest Accept
     actionStatus = 'suggest_accept';
     draftReply = `Dobrý den, potvrzuji termín ${requestedTime.toLocaleString('cs-CZ')}.`;
