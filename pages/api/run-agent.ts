@@ -1,13 +1,5 @@
-// pages/api/run-agent.ts
-
 import type { NextApiRequest, NextApiResponse } from 'next'
-
-const runnerModule = require('../../agent/agentRunner')
-const run =
-  runnerModule.agentRunner ||
-  runnerModule.default ||
-  runnerModule.run ||
-  runnerModule
+import { runAgentForClient } from '../../agent/agentRunner'
 
 export default async function handler(
   req: NextApiRequest,
@@ -18,13 +10,12 @@ export default async function handler(
     return
   }
 
-  const { clientId } = req.body as { clientId?: string }
+  const { clientId } = req.body
   if (!clientId) {
     res.status(400).json({ error: 'clientId required' })
     return
   }
 
-  await run({ clientId })
-
-  res.status(200).json({ ok: true })
+  const result = await runAgentForClient(clientId)
+  res.status(200).json(result)
 }
