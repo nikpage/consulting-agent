@@ -1,21 +1,18 @@
-import type { NextApiRequest, NextApiResponse } from 'next';
-import { runAgentForClient } from '../../agent/agentRunner';
+import crypto from 'crypto';
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+if (!process.env.NEXTAUTH_SECRET) {
+  throw new Error('NEXTAUTH_SECRET is required but not set');
+}
 
-  const { clientId } = req.body;
+const SECRET = process.env.NEXTAUTH_SECRET;
 
-  if (!clientId) {
-    return res.status(400).json({ error: 'clientId required' });
-  }
+export function signParams(params: Record<string, string>) {
+  const str = Object.keys(params).sort().map(k => `${k}=${params[k]}`).join('&');
+  return crypto.createHmac('sha256', SECRET).update(str).digest('hex');
+}
 
-  try {
-    const result = await runAgentForClient(clientId);
-    return res.status(200).json(result);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
-  }
+export function verifySignature(query: any) {
+  const { sig, ...params } = query;
+  if (!sig) return false;
+  return sig === signParams(params as Record<string, string>);
 }
