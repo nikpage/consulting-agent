@@ -1,3 +1,5 @@
+import { supabase } from '../../../../lib/supabase'
+
 const { data: existing } = await supabase
   .from('users')
   .select('google_oauth_tokens')
