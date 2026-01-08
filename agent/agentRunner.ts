@@ -44,7 +44,7 @@ export async function runAgentForClient(clientId: string): Promise<{
       })
     );
 
-    const messages = resList.messages ?? [];
+    const messages = resList.data.messages ?? [];
 
     // Process each message
     for (const msgStub of messages) {
