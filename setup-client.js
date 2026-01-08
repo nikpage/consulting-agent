@@ -30,12 +30,12 @@ function question(prompt) {
 
 async function main() {
   console.log('\n=== Add New Client ===\n');
-  
+
   const name = await question('Client name: ');
   const email = await question('Client email: ');
-  
+
   const clientId = randomUUID();
-  
+
   // Save client to database
   const { error } = await supabase
     .from('users')
@@ -44,18 +44,19 @@ async function main() {
       email: email,
       settings: { name: name }
     });
-  
+
   if (error) {
     console.error('\nError creating client:', error.message);
     rl.close();
     return;
   }
-  
+
   console.log('\n✓ Client created in database');
-  
-  // Generate OAuth URL
+
+  // Generate OAuth URL (FORCES refresh_token)
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: 'offline',
+    prompt: 'consent',
     scope: [
       'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/gmail.send',
@@ -63,12 +64,12 @@ async function main() {
     ],
     state: clientId
   });
-  
+
   console.log('\n=== Authorization Required ===');
   console.log('\nOpen this URL in your browser:');
   console.log('\n' + authUrl + '\n');
   console.log('After authorization, tokens will be saved automatically.\n');
-  
+
   rl.close();
 }
 
