@@ -1,3 +1,5 @@
+import type { gmail_v1 } from 'googleapis';
+
 import { storeMessage } from '../lib/ingestion';
 import { resolveCp } from '../lib/cp';
 import { renewIfExpiring } from '../lib/calendar-setup';
