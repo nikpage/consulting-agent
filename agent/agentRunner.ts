@@ -38,9 +38,11 @@ export async function runAgentForClient(clientId: string): Promise<{
     const resList = await retry<gmail_v1.Schema$ListMessagesResponse>(() =>
       ctx.gmail.users.messages.list({
         userId: 'me',
-         q: 'is:unread',
-        maxResults: 10
-      })
+        labelIds: ['INBOX'],
+        q: 'is:unread',
+        maxResults: 10,
+      });
+
     );
 
     const messages = resList.messages || [];
