@@ -29,7 +29,9 @@ async function findFreeSlots(calendar: any, startSearch: Date, durationMins: num
       singleEvents: true
     }));
 
-    if (res.data.items.length === 0) {
+    const items = (res as { items?: any[] }).items ?? [];
+     if (items.length === 0) {
+
       slots.push({ start: candidate.toISOString(), end: endCandidate.toISOString() });
       candidate = addHours(candidate, 2);
     } else {
