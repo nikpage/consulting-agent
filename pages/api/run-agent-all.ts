@@ -32,8 +32,7 @@ export default async function handler(
   try {
     const { data: users, error } = await supabase
       .from('users')
-      .select('*')
-      .filter('settings->>agent_paused', 'neq', 'true');
+      .select('*');
 
     if (error) {
       errors.push(`DB query failed: ${error.message}`);
