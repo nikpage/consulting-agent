@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { supabase } from '../../../lib/supabase';
-import { runAgentForClient } from '../../../agent/agentRunner';
+import { supabase } from '../../lib/supabase';
+import { runAgentForClient } from '../../agent/agentRunner';
 
 let isRunning = false;
 let lastRunTime = 0;
