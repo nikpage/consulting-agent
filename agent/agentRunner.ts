@@ -3,6 +3,7 @@ import type { gmail_v1 } from 'googleapis';
 import { storeMessage } from '../lib/ingestion';
 import { resolveCp } from '../lib/cp';
 import { renewIfExpiring } from '../lib/calendar-setup';
+import { updateThreadSummary } from '../lib/threading';
 import { createAgentContext } from './agentContext';
 import { retry } from './retryPolicy';
 import { ingestEmail } from './agentSteps/ingest';
@@ -91,6 +92,9 @@ export async function runAgentForClient(clientId: string): Promise<{
             .from('conversation_threads')
             .update({ priority_score: score, last_updated: new Date().toISOString() })
             .eq('id', threadId);
+
+          // Update thread summary
+          await updateThreadSummary(ctx.supabase, threadId);
         }
 
         // 5. SCHEDULE

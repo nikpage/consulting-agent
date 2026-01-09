@@ -24,5 +24,5 @@ export default async function handler(req, res) {
     .update({ google_oauth_tokens: merged })
     .eq('id', state)
 
-  res.redirect('/admin/setup')
+  res.redirect('/')
 }
