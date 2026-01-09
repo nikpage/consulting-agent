@@ -10,9 +10,10 @@ export async function runAgentForClient(clientId: string): Promise<{
 }> {
   const errors: string[] = [];
   let processedMessages = 0;
+  let ctx;
 
   try {
-    const ctx = await createAgentContext(clientId);
+    ctx = await createAgentContext(clientId);
 
     if (!ctx) {
       errors.push('Failed to create agent context');
@@ -36,7 +37,7 @@ export async function runAgentForClient(clientId: string): Promise<{
     processedMessages = await runIngestion(ctx);
 
   } catch (clientError: any) {
-    const errorId = await saveAgentError(ctx.supabase, clientId, 'ingestion', clientError);
+    const errorId = await saveAgentError(ctx?.supabase, clientId, 'ingestion', clientError);
     errors.push(`${clientError.message} Error ID: ${errorId}`);
   }
 
