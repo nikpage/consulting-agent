@@ -1,3 +1,4 @@
+//setup-client.js
 const readline = require('readline');
 const { randomUUID } = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
@@ -58,9 +59,10 @@ async function main() {
     access_type: 'offline',
     prompt: 'consent',
     scope: [
+      'https://www.googleapis.com/auth/gmail.modify',
       'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/gmail.send',
-      'https://www.googleapis.com/auth/calendar'
+      'https://www.googleapis.com/auth/calendar.events'
     ],
     state: clientId
   });
