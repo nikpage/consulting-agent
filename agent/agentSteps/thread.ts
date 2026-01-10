@@ -1,3 +1,4 @@
+//agent/agentSteps/thread.ts
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { generateEmbedding } from '../../lib/embeddings';
 import { AgentContext } from '../agentContext';
@@ -30,10 +31,22 @@ export async function threadEmail(
   cpId: string,
   messageText: string,
   messageId: string,
-  classification: any
+  classification: any,
+  emailData: any
 ): Promise<string | null> {
   if (isSpam(messageText, classification)) {
     return null;
+  }
+
+  // Native thread match using Gmail threadId
+  const { data: existingMsg } = await ctx.supabase
+    .from('messages')
+    .select('thread_id')
+    .eq('external_thread_id', emailData.threadId)
+    .single();
+
+  if (existingMsg?.thread_id) {
+    return existingMsg.thread_id;
   }
 
   const embedding = await retry(() => generateEmbedding(messageText));

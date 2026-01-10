@@ -1,3 +1,4 @@
+//agent/agentContext.ts
 import { createClient } from '@supabase/supabase-js';
 import { google } from 'googleapis';
 import { setCredentials } from '../lib/google-auth';
@@ -44,8 +45,22 @@ export async function createAgentContext(clientId: string): Promise<AgentContext
     return null;
   }
 
-  // Setup Gmail and Calendar
+  // Check token expiry and refresh if needed
   const oauth2Client = setCredentials(tokens);
+  if (Date.now() >= tokens.expiry_date - 300000) {
+    if (!tokens.refresh_token) {
+      throw new Error('AUTH_REQUIRED');
+    }
+    const { credentials } = await oauth2Client.refreshAccessToken();
+    tokens.access_token = credentials.access_token;
+    tokens.expiry_date = credentials.expiry_date;
+    await supabase
+      .from('users')
+      .update({ google_oauth_tokens: tokens })
+      .eq('id', clientId);
+  }
+
+  // Setup Gmail and Calendar
   const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
   const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
 

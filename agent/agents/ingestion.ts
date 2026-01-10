@@ -1,3 +1,5 @@
+// agent/agents/ingestion.ts
+
 import type { AgentContext } from '../agentContext';
 import { storeMessage } from '../../lib/ingestion';
 import { resolveCp } from '../../lib/cp';
@@ -42,13 +44,17 @@ export async function runIngestion(ctx: AgentContext): Promise<number> {
       cpId,
       emailData.cleanedText,
       emailData.id,
-      triage
+      triage,
+      emailData
     );
 
     if (threadId) {
       await ctx.supabase
         .from('messages')
-        .update({ thread_id: threadId })
+        .update({
+          thread_id: threadId,
+          external_thread_id: emailData.threadId
+        })
         .eq('id', emailData.id);
 
       let score = 1;
